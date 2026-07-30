@@ -1,0 +1,40 @@
+poll_interval_seconds = 300
+database_path = "/var/lib/linear-workspace-sync/state.db"
+
+[personal]
+name = "personal"
+api_key_env = "LINEAR_PERSONAL_API_KEY"
+workspace_name = "Personal"
+team_name = "Personal"
+
+[external.work]
+name = "work"
+api_key_env = "LINEAR_WORK_API_KEY"
+workspace_name = "Work"
+workspace_slug = "work"
+team_name = "Work"
+routing_label = "sync:work"
+# Labels added to the corresponding synced issue in the personal workspace.
+personal_labels = []
+
+[external.startup]
+name = "startup"
+api_key_env = "LINEAR_STARTUP_API_KEY"
+workspace_name = "Startup"
+workspace_slug = "startup"
+team_name = "Startup"
+routing_label = "sync:startup"
+personal_labels = []
+
+# Add any number of additional [external.<key>] sections with the same fields.
+
+[sync]
+conflict_label = "sync:conflict"
+broken_label = "sync:broken"
+external_unavailable_label = "sync:external-unavailable"
+
+[sync.status_mappings.work]
+# personal_status = "external_status"
+
+[sync.status_mappings.startup]
+# personal_status = "external_status"

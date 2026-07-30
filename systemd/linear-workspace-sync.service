@@ -1,0 +1,21 @@
+[Unit]
+Description=Linear workspace sync reconciliation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=linear-sync
+Group=linear-sync
+WorkingDirectory=/opt/linear-workspace-sync
+EnvironmentFile=/etc/linear-workspace-sync/env
+ExecStart=/usr/bin/node /opt/linear-workspace-sync/dist/main.js --config /etc/linear-workspace-sync/config.toml
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/linear-workspace-sync
+
+[Install]
+WantedBy=multi-user.target

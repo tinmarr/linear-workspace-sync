@@ -1,0 +1,71 @@
+export type WorkspaceKey = string;
+
+export type SyncLabelNames = {
+  conflict: string;
+  broken: string;
+  externalUnavailable: string;
+};
+
+export type WorkspaceConfig = {
+  key: WorkspaceKey;
+  name: string;
+  apiKeyEnv: string;
+  workspaceName: string;
+  workspaceSlug?: string;
+  teamName: string;
+  routingLabel?: string;
+  personalLabels: string[];
+  statusMappings: Record<string, string>;
+};
+
+export type AppConfig = {
+  pollIntervalSeconds: number;
+  databasePath: string;
+  personal: WorkspaceConfig;
+  external: WorkspaceConfig[];
+  syncLabels: SyncLabelNames;
+};
+
+export type IssueSnapshot = {
+  id: string;
+  identifier: string;
+  url: string;
+  workspaceKey: WorkspaceKey;
+  title: string;
+  description: string | null;
+  statusName: string;
+  dueDate: string | null;
+  estimate: number | null;
+  priority: number;
+  assigneeEmail: string | null;
+  archived: boolean;
+  labelNames: string[];
+};
+
+export type MappingRecord = {
+  personalIssueId: string;
+  externalWorkspaceKey: WorkspaceKey;
+  externalIssueId: string;
+  personalIssueUrl: string;
+  externalIssueUrl: string;
+  active: boolean;
+  conflict: boolean;
+  broken: boolean;
+};
+
+export type CoreField =
+  | "title"
+  | "description"
+  | "statusName"
+  | "dueDate"
+  | "estimate"
+  | "priority";
+
+export const CORE_FIELDS: readonly CoreField[] = [
+  "title",
+  "description",
+  "statusName",
+  "dueDate",
+  "estimate",
+  "priority",
+];

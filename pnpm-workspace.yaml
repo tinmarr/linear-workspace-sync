@@ -1,0 +1,8 @@
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+minimumReleaseAgeExclude:
+  - '@linear/sdk@89.0.0'
+onlyBuiltDependencies:
+  - better-sqlite3
+  - esbuild
