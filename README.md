@@ -37,7 +37,8 @@ The service uses these paths:
 | Host path                                            | Used for                                                                       |
 | ---------------------------------------------------- | ------------------------------------------------------------------------------ |
 | `$XDG_CONFIG_HOME/linear-workspace-sync/config.toml` | application configuration, mounted as `/etc/linear-workspace-sync/config.toml` |
-| `$XDG_STATE_HOME/linear-workspace-sync/env`          | Linear API keys, passed to the container with `--env-file`                     |
+| `$XDG_CONFIG_HOME/linear-workspace-sync/env`         | Linear API keys, passed to the container with `--env-file`                     |
+| `$XDG_STATE_HOME/linear-workspace-sync/`             | SQLite state db `state.db`                                                     |
 
 Create the files and directories:
 
