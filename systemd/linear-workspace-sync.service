@@ -5,17 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=linear-sync
-Group=linear-sync
-WorkingDirectory=/opt/linear-workspace-sync
-EnvironmentFile=/etc/linear-workspace-sync/env
-ExecStart=/usr/bin/node /opt/linear-workspace-sync/dist/main.js --config /etc/linear-workspace-sync/config.toml
+ExecStart=/usr/bin/podman run --rm --pull=newer -v %C/linear-workspace-sync/config.toml:/app/config.toml:ro -v %S/lws-state:/app/state --env-file=%C/linear-workspace-sync/env ghcr.io/tinmarr/linear-workspace-sync:latest --config /etc/linear-workspace-sync/config.toml
 Nice=10
-NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/linear-workspace-sync
+ProtectSystem=full
+UMask=0077
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
