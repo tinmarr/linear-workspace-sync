@@ -44,13 +44,13 @@ Create the files and directories:
 
 ```sh
 install -d -m 755 \
-  "$XDG_CONFIG_HOME/linear-workspace-sync" \
-  "$XDG_CONFIG_HOME/systemd/user" \
-  "$XDG_STATE_HOME/linear-workspace-sync"
+  $XDG_CONFIG_HOME/linear-workspace-sync \
+  $XDG_CONFIG_HOME/systemd/user \
+  $XDG_STATE_HOME/linear-workspace-sync
 install -m 644 config.example.toml \
-  "$XDG_CONFIG_HOME/linear-workspace-sync/config.toml"
+  $XDG_CONFIG_HOME/linear-workspace-sync/config.toml
 install -m 600 /path/to/env \
-  "$XDG_CONFIG_HOME/linear-workspace-sync/env"
+  $XDG_CONFIG_HOME/linear-workspace-sync/env
 ```
 
 Edit `config.toml` and `env`.
@@ -59,9 +59,9 @@ Install and start the systemd user timer:
 
 ```sh
 install -m 644 systemd/linear-workspace-sync.service \
-  "$XDG_CONFIG_HOME/systemd/user/"
+  $XDG_CONFIG_HOME/systemd/user/
 install -m 644 systemd/linear-workspace-sync.timer \
-  "$XDG_CONFIG_HOME/systemd/user/"
+  $XDG_CONFIG_HOME/systemd/user/
 
 systemctl --user daemon-reload
 systemctl --user enable --now linear-workspace-sync.timer
