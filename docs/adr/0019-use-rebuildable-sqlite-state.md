@@ -1,3 +1,0 @@
-# Use rebuildable SQLite state
-
-The engine uses a small local SQLite database as a persistent index and snapshot cache. Linear remains the source of truth for issue data and mapping identity, which must be recoverable from personal links and sync labels. Credentials and deployment configuration live outside SQLite. The database is not normally deleted or reset, but it is safe to delete after stopping the process. If the process starts without a database file, it treats the run as uninitialized, rebuilds mappings from Linear links, sync labels, external configuration, and current assignments, and then resumes normal synchronization without modifying Linear merely because state was absent.

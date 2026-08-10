@@ -1,5 +1,5 @@
 poll_interval_seconds = 300
-database_path = "/var/lib/linear-workspace-sync/state.db"
+database_path = "state/state.db"
 
 [personal]
 name = "personal"

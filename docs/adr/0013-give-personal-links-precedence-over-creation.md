@@ -1,3 +1,0 @@
-# Give personal links precedence over creation
-
-When a personal issue has a valid link to an external issue, the engine uses that link to establish or recover the one-to-one mapping, even if the corresponding routing label is absent. The engine ensures that personal routing label is present. A routing label without such a link creates a new external issue in the configured destination. This makes manual backfill and conflict recovery deterministic and avoids creating duplicates when the user has already identified the counterpart. If multiple external links make the pairing ambiguous, the engine does not choose one and instead marks the personal issue with `sync:broken` and mentions the user once.

@@ -1,3 +1,0 @@
-# Default to exact status matches
-
-Status synchronization first maps workflow states by exact name across workspaces. Configuration can define explicit one-to-one bidirectional status pairs, and explicit configuration always overrides an automatic exact-name match. When neither an explicit pair nor an exact match exists, the target status remains unchanged, the personal issue receives the `sync:broken` state label, and the engine adds one deduplicated personal-only comment mentioning the user for that unresolved condition. This keeps the default predictable while allowing workspace-specific workflows without hard-coding assumptions about their semantics.
