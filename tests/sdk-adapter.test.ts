@@ -120,3 +120,60 @@ describe("SDK issue hydration", () => {
     expect(observedFilter).toMatchObject({ completedAt: { null: true } });
   });
 });
+
+describe("SDK notification client", () => {
+  it("uses the injected app client for comments and the human client for sync operations", async () => {
+    const appConfig = config(":memory:");
+    const humanComments: unknown[] = [];
+    const appComments: unknown[] = [];
+    const humanCalls: string[] = [];
+    const connection = <T>(nodes: T[]) => ({
+      nodes,
+      pageInfo: { hasNextPage: false },
+      fetchNext: async () => connection([]),
+    });
+    const humanClient = {
+      createComment: async (input: unknown) => {
+        humanComments.push(input);
+      },
+      teams: async () => connection([{ id: "team-personal", name: "Personal" }]),
+      issueLabels: async () => connection([{
+        id: "label-sync-work",
+        name: "sync:work",
+        archivedAt: null,
+        teamId: "team-personal",
+      }]),
+      issueAddLabel: async () => {
+        humanCalls.push("issueAddLabel");
+      },
+    };
+    const appClient = {
+      createComment: async (input: unknown) => {
+        appComments.push(input);
+      },
+    };
+    const Workspace = SdkLinearWorkspace as unknown as new (...args: any[]) => SdkLinearWorkspace;
+    const workspace = new Workspace(
+      "personal",
+      appConfig.personal,
+      humanClient,
+      {
+        id: "human-viewer",
+        email: "me@example.com",
+        url: "https://linear.app/personal/profile/me",
+      },
+      appConfig.external,
+      appClient,
+    );
+
+    await workspace.addPersonalNotification("personal-1", "A sync conflict needs your attention.");
+    await workspace.addLabel("personal-1", "sync:work");
+
+    expect(appComments).toEqual([{
+      issueId: "personal-1",
+      body: "https://linear.app/personal/profile/me A sync conflict needs your attention.",
+    }]);
+    expect(humanComments).toEqual([]);
+    expect(humanCalls).toEqual(["issueAddLabel"]);
+  });
+});

@@ -1,5 +1,8 @@
 poll_interval_seconds = 300
 database_path = "/var/lib/linear-workspace-sync/state.db"
+# Optional app-actor access token used only for personal sync notifications.
+# If omitted, notification comments use the personal workspace API key.
+notification_access_token_env = "LINEAR_NOTIFICATION_ACCESS_TOKEN"
 
 [personal]
 name = "personal"
