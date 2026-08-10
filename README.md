@@ -12,11 +12,14 @@ pnpm test
 pnpm build
 ```
 
-Set the API key environment variables named by `api_key_env` in `config.toml` before running the service locally:
+Set the API key environment variables named by `api_key_env` in `config.toml` before running the service locally. To author personal sync notifications as the Linear app actor, also set the environment variable named by `notification_access_token_env`, which defaults to `LINEAR_NOTIFICATION_ACCESS_TOKEN`. The token needs access to the personal workspace and permission to create comments. If it is omitted, notification comments keep using the personal workspace client.
+
+The notification client consumes the access token directly. It does not mint or renew OAuth client-credentials tokens, so replace the environment value when the app token expires or is replaced.
 
 ```sh
 LINEAR_PERSONAL_API_KEY=... \
 LINEAR_WORK_API_KEY=... \
+LINEAR_NOTIFICATION_ACCESS_TOKEN=... \
 pnpm dev -- --config ./config.toml --force
 ```
 

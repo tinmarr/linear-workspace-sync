@@ -74,6 +74,18 @@ routing_label = "sync:side"
     expect(loaded.personal.personalLabels).toEqual([]);
   });
 
+  it("defaults the notification access token environment variable", async () => {
+    const loaded = await loadConfig(writeConfig(base));
+
+    expect(loaded.notificationAccessTokenEnv).toBe("LINEAR_NOTIFICATION_ACCESS_TOKEN");
+  });
+
+  it("allows the notification access token environment variable to be customized", async () => {
+    const loaded = await loadConfig(writeConfig(`notification_access_token_env = "CUSTOM_TOKEN"\n${base}`));
+
+    expect(loaded.notificationAccessTokenEnv).toBe("CUSTOM_TOKEN");
+  });
+
   it("rejects duplicate personal labels", async () => {
     const source = base.replace(
       'personal_labels = ["frv:work", "priority:work"]',

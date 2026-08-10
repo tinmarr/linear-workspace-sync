@@ -141,6 +141,7 @@ export function config(databasePath: string): AppConfig {
   return {
     pollIntervalSeconds: 300,
     databasePath,
+    notificationAccessTokenEnv: "LINEAR_NOTIFICATION_ACCESS_TOKEN",
     personal: {
       key: "personal",
       name: "Personal",

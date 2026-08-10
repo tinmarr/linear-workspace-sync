@@ -1,5 +1,7 @@
 export type WorkspaceKey = string;
 
+export const DEFAULT_NOTIFICATION_ACCESS_TOKEN_ENV = "LINEAR_NOTIFICATION_ACCESS_TOKEN";
+
 export type SyncLabelNames = {
   conflict: string;
   broken: string;
@@ -21,6 +23,7 @@ export type WorkspaceConfig = {
 export type AppConfig = {
   pollIntervalSeconds: number;
   databasePath: string;
+  notificationAccessTokenEnv?: string;
   personal: WorkspaceConfig;
   external: WorkspaceConfig[];
   syncLabels: SyncLabelNames;

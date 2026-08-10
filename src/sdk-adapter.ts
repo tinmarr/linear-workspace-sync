@@ -1,5 +1,9 @@
 import { LinearClient, LinearDocument } from "@linear/sdk";
-import type { AppConfig, WorkspaceConfig } from "./domain.js";
+import {
+  DEFAULT_NOTIFICATION_ACCESS_TOKEN_ENV,
+  type AppConfig,
+  type WorkspaceConfig,
+} from "./domain.js";
 import type {
   ExternalIssueLink,
   IssueCreateInput,
@@ -21,6 +25,7 @@ type SdkTeam = Awaited<ReturnType<LinearClient["team"]>>;
 type SdkLabel = Awaited<ReturnType<LinearClient["issueLabels"]>>["nodes"][number];
 type SdkAttachment = Awaited<ReturnType<LinearClient["attachments"]>>["nodes"][number];
 type SdkViewer = Awaited<LinearClient["viewer"]>;
+type NotificationClient = Pick<LinearClient, "createComment">;
 
 export async function all<T>(initial: Promise<Connection<T>>): Promise<T[]> {
   let page = await initial;
@@ -74,6 +79,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
   public readonly viewerId: string;
   public readonly viewerEmail: string;
   private readonly viewerUrl: string;
+  private readonly notificationClient: NotificationClient;
   private readonly labelIds = new Map<string, string>();
   private readonly teams = new Map<string, SdkTeam>();
   private readonly teamPromises = new Map<string, Promise<SdkTeam>>();
@@ -94,15 +100,18 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     private readonly client: LinearClient,
     viewer: SdkViewer,
     private readonly linkTargets: WorkspaceConfig[],
+    notificationClient?: NotificationClient,
   ) {
     this.viewerId = viewer.id;
     this.viewerEmail = viewer.email;
     this.viewerUrl = viewer.url;
+    this.notificationClient = notificationClient ?? client;
   }
 
   public static async create(
     config: WorkspaceConfig,
     linkTargets: WorkspaceConfig[],
+    notificationClient?: NotificationClient,
   ): Promise<SdkLinearWorkspace> {
     logEvent("linear_client_creating", { workspace: config.name, key: config.key });
     const apiKey = process.env[config.apiKeyEnv];
@@ -113,7 +122,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     logEvent("linear_viewer_fetching", { workspace: config.name, key: config.key });
     const viewer = await client.viewer;
     logEvent("linear_client_ready", { workspace: config.name, key: config.key });
-    return new SdkLinearWorkspace(config.key, config, client, viewer, linkTargets);
+    return new SdkLinearWorkspace(config.key, config, client, viewer, linkTargets, notificationClient);
   }
 
   public async listIssues(query: IssueQuery): Promise<LinearIssue[]> {
@@ -270,7 +279,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
 
   public async addPersonalNotification(issueId: string, message: string): Promise<void> {
     logEvent("linear_personal_notification_adding", { workspace: this.config.name, issueId });
-    await this.client.createComment({ issueId, body: `${this.viewerUrl} ${message}` });
+    await this.notificationClient.createComment({ issueId, body: `${this.viewerUrl} ${message}` });
     logEvent("linear_personal_notification_added", { workspace: this.config.name, issueId });
   }
 
@@ -527,7 +536,23 @@ export async function createSdkWorkspaces(config: AppConfig): Promise<{
   personal: SdkLinearWorkspace;
   externals: Map<string, SdkLinearWorkspace>;
 }> {
-  const personal = await SdkLinearWorkspace.create(config.personal, config.external);
+  const notificationAccessTokenEnv =
+    config.notificationAccessTokenEnv ?? DEFAULT_NOTIFICATION_ACCESS_TOKEN_ENV;
+  const notificationAccessToken = process.env[notificationAccessTokenEnv];
+  const notificationClient = notificationAccessToken
+    ? new LinearClient({ accessToken: notificationAccessToken })
+    : undefined;
+  logEvent(
+    notificationClient
+      ? "linear_notification_client_ready"
+      : "linear_notification_client_fallback",
+    { environmentVariable: notificationAccessTokenEnv },
+  );
+  const personal = await SdkLinearWorkspace.create(
+    config.personal,
+    config.external,
+    notificationClient,
+  );
   const externalEntries = await Promise.all(
     config.external.map(async (workspace) => [workspace.key, await SdkLinearWorkspace.create(workspace, [])] as const),
   );
