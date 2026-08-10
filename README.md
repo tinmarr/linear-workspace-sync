@@ -34,9 +34,7 @@ pnpm test
 pnpm build
 ```
 
-Set one environment variable per configured workspace, using the names from `api_key_env` in the TOML file. To author personal sync notifications as the Linear app actor, also set the environment variable named by `notification_access_token_env`, which defaults to `LINEAR_NOTIFICATION_ACCESS_TOKEN`. The token must have access to the personal workspace and permission to create comments. If it is omitted, the existing personal workspace client authors notification comments, preserving the previous behavior. Keep `config.toml`, credentials, and the SQLite database outside version control.
-
-The notification client consumes the configured access token directly. It does not mint or renew OAuth client-credentials tokens, so rotate the environment value when the app token expires or is replaced.
+Set one environment variable per configured workspace, using the names from `api_key_env` in the TOML file. Keep `config.toml`, credentials, and the SQLite database outside version control.
 
 Run one reconciliation manually with:
 
@@ -44,7 +42,6 @@ Run one reconciliation manually with:
 LINEAR_PERSONAL_API_KEY=... \
 LINEAR_WORK_API_KEY=... \
 LINEAR_STARTUP_API_KEY=... \
-LINEAR_NOTIFICATION_ACCESS_TOKEN=... \
 pnpm dev -- --config ./config.toml --force
 ```
 
