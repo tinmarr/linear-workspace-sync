@@ -9,6 +9,7 @@ import type {
 import { CORE_FIELDS } from "./domain.js";
 import type { ExternalIssueLink, IssueCreateInput, IssueUpdate, LinearIssue, LinearWorkspace } from "./linear.js";
 import { logEvent } from "./log.js";
+import { RelationshipSynchronizer } from "./relationship-sync.js";
 import { SyncState } from "./state.js";
 
 type WorkspacePair = {
@@ -18,6 +19,7 @@ type WorkspacePair = {
 
 type ReconcileContext = {
   personalIssues: Map<string, LinearIssue>;
+  externalIssues: Map<WorkspaceKey, Map<string, LinearIssue>>;
   assignedExternalIds: Map<WorkspaceKey, Set<string>>;
   processedMappingKeys: Set<string>;
 };
@@ -58,6 +60,7 @@ export class ReconciliationEngine {
     logEvent("personal_issues_discovered", { count: personalIssues.length });
     const context: ReconcileContext = {
       personalIssues: new Map(personalIssues.map((issue) => [issue.id, issue])),
+      externalIssues: new Map(),
       assignedExternalIds: new Map(),
       processedMappingKeys: new Set(),
     };
@@ -118,6 +121,10 @@ export class ReconciliationEngine {
       context.assignedExternalIds.set(
         pair.externalConfig.key,
         new Set(assigned.map((issue) => issue.id)),
+      );
+      context.externalIssues.set(
+        pair.externalConfig.key,
+        new Map(assigned.map((issue) => [issue.id, issue])),
       );
       for (const externalIssue of assigned) {
         const processedKey = this.mappingKey(pair.externalConfig.key, externalIssue.id);
@@ -246,6 +253,22 @@ export class ReconciliationEngine {
         this.state.clearFailure(pair.externalConfig.key, externalIssue.id);
       } catch (error: unknown) {
         await this.handleFailure(pair.externalConfig.key, externalIssue.id, error, result, personalIssue);
+      }
+    }
+
+    for (const pair of this.workspacePairs()) {
+      try {
+        await new RelationshipSynchronizer(
+          this.personal,
+          pair.external,
+          this.state,
+          pair.externalConfig.key,
+        ).run(
+          context.personalIssues,
+          context.externalIssues.get(pair.externalConfig.key) ?? new Map(),
+        );
+      } catch (error: unknown) {
+        this.handleWorkspaceFailure(`relationships:${pair.externalConfig.key}`, error);
       }
     }
 

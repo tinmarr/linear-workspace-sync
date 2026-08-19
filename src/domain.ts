@@ -1,5 +1,44 @@
 export type WorkspaceKey = string;
 
+export type IssueRelationSnapshot = {
+  id: string;
+  issueId: string;
+  relatedIssueId: string;
+  type: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type IssueRelationChange = {
+  relatedIdentifier: string;
+  action: "added" | "removed";
+  updatedAt: string;
+};
+
+export type RelationshipSyncState = {
+  externalWorkspaceKey: WorkspaceKey;
+  personalIssueId: string;
+  personalRelatedIssueId: string;
+  relationType: string;
+  personalPresent: boolean;
+  externalPresent: boolean;
+  personalUpdatedAt: string | null;
+  externalUpdatedAt: string | null;
+  personalManaged: boolean;
+  externalManaged: boolean;
+};
+
+export type ParentSyncState = {
+  externalWorkspaceKey: WorkspaceKey;
+  personalIssueId: string;
+  personalParentIssueId: string | null;
+  externalParentIssueId: string | null;
+  personalUpdatedAt: string | null;
+  externalUpdatedAt: string | null;
+  personalManaged: boolean;
+  externalManaged: boolean;
+};
+
 export const DEFAULT_NOTIFICATION_ACCESS_TOKEN_ENV = "LINEAR_NOTIFICATION_ACCESS_TOKEN";
 
 export type SyncLabelNames = {

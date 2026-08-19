@@ -1,5 +1,16 @@
-import type { AppConfig, IssueSnapshot } from "../src/domain.js";
-import type { IssueCreateInput, IssueQuery, IssueUpdate, LinearIssue, LinearWorkspace } from "../src/linear.js";
+import type {
+  AppConfig,
+  IssueRelationSnapshot,
+  IssueSnapshot,
+} from "../src/domain.js";
+import type {
+  IssueCreateInput,
+  IssueQuery,
+  IssueRelationCreateInput,
+  IssueUpdate,
+  LinearIssue,
+  LinearWorkspace,
+} from "../src/linear.js";
 
 export class FakeWorkspace implements LinearWorkspace {
   public readonly viewerId: string;
@@ -11,6 +22,8 @@ export class FakeWorkspace implements LinearWorkspace {
   public readonly listQueries: IssueQuery[] = [];
   public getIssueCalls = 0;
   private nextIssue = 1;
+  private relationSequence = 1;
+  private clock = 1;
 
   public constructor(
     public readonly key: string,
@@ -29,7 +42,7 @@ export class FakeWorkspace implements LinearWorkspace {
       .map((issue) => structuredClone(issue));
   }
 
-  public async getIssue(issueId: string): Promise<LinearIssue | null> {
+  public async getIssue(issueId: string, _includeArchived = false, _includeRelationships = false): Promise<LinearIssue | null> {
     this.getIssueCalls++;
     const issue = this.issues.get(issueId) ?? [...this.issues.values()].find((item) => item.identifier === issueId);
     return issue ? structuredClone(issue) : null;
@@ -57,6 +70,11 @@ export class FakeWorkspace implements LinearWorkspace {
       archived: false,
       labelNames: [],
       externalLinks: [],
+      updatedAt: this.timestamp(),
+      parentIssueId: null,
+      parentUpdatedAt: null,
+      relations: [],
+      relationChanges: [],
     };
     this.issues.set(id, issue);
     return structuredClone(issue);
@@ -65,8 +83,48 @@ export class FakeWorkspace implements LinearWorkspace {
   public async updateIssue(issueId: string, update: IssueUpdate): Promise<LinearIssue> {
     const issue = this.issues.get(issueId);
     if (!issue) throw new Error(`Unknown issue ${issueId}`);
+    const parentChanged = update.parentIssueId !== undefined && issue.parentIssueId !== update.parentIssueId;
     Object.assign(issue, update);
+    issue.updatedAt = this.timestamp();
+    if (parentChanged) issue.parentUpdatedAt = issue.updatedAt;
     return structuredClone(issue);
+  }
+
+  public async createIssueRelation(input: IssueRelationCreateInput): Promise<IssueRelationSnapshot> {
+    const relation: IssueRelationSnapshot = {
+      id: `${this.key}-relation-${this.relationSequence++}`,
+      issueId: input.issueId,
+      relatedIssueId: input.relatedIssueId,
+      type: input.type,
+      createdAt: this.timestamp(),
+      updatedAt: this.timestamp(),
+    };
+    const source = this.issues.get(input.issueId);
+    if (!source) throw new Error(`Unknown issue ${input.issueId}`);
+    source.relations.push(relation);
+    source.updatedAt = relation.updatedAt;
+    source.relationChanges.push({
+      relatedIdentifier: this.issues.get(input.relatedIssueId)?.identifier ?? input.relatedIssueId,
+      action: "added",
+      updatedAt: relation.updatedAt,
+    });
+    return structuredClone(relation);
+  }
+
+  public async deleteIssueRelation(relationId: string): Promise<void> {
+    for (const source of this.issues.values()) {
+      const index = source.relations.findIndex((relation) => relation.id === relationId);
+      if (index < 0) continue;
+      const [relation] = source.relations.splice(index, 1);
+      source.updatedAt = this.timestamp();
+      source.relationChanges.push({
+        relatedIdentifier: this.issues.get(relation.relatedIssueId)?.identifier ?? relation.relatedIssueId,
+        action: "removed",
+        updatedAt: source.updatedAt,
+      });
+      return;
+    }
+    throw new Error(`Unknown issue relation ${relationId}`);
   }
 
   public async restoreIssue(issueId: string): Promise<LinearIssue> {
@@ -113,11 +171,23 @@ export class FakeWorkspace implements LinearWorkspace {
   public async addPersonalNotification(issueId: string, body: string): Promise<void> {
     this.comments.push({ issueId, body });
   }
+
+  public listRelationships(): IssueRelationSnapshot[] {
+    return [...this.issues.values()]
+      .flatMap((issue) => issue.relations)
+      .map((relation) => structuredClone(relation));
+  }
+
+  private timestamp(): string {
+    return new Date(this.clock++ * 1000).toISOString();
+  }
 }
 
 export function issue(
   workspaceKey: string,
-  values: Partial<IssueSnapshot> & Pick<IssueSnapshot, "id" | "identifier" | "url" | "title" | "statusName">,
+  values: Partial<IssueSnapshot>
+    & Partial<Pick<LinearIssue, "parentIssueId" | "parentUpdatedAt" | "relations" | "relationChanges" | "updatedAt">>
+    & Pick<IssueSnapshot, "id" | "identifier" | "url" | "title" | "statusName">,
 ): LinearIssue {
   return {
     id: values.id,
@@ -134,6 +204,28 @@ export function issue(
     archived: values.archived ?? false,
     labelNames: values.labelNames ?? [],
     externalLinks: [],
+    updatedAt: values.updatedAt ?? "2026-01-01T00:00:00.000Z",
+    parentIssueId: values.parentIssueId ?? null,
+    parentUpdatedAt: values.parentUpdatedAt ?? null,
+    relations: values.relations ?? [],
+    relationChanges: values.relationChanges ?? [],
+  };
+}
+
+export function relation(
+  workspaceKey: string,
+  issueId: string,
+  relatedIssueId: string,
+  type: string,
+): IssueRelationSnapshot {
+  const timestamp = "2026-01-01T00:00:00.000Z";
+  return {
+    id: `${workspaceKey}-relation-${issueId}-${relatedIssueId}-${type}`,
+    issueId,
+    relatedIssueId,
+    type,
+    createdAt: timestamp,
+    updatedAt: timestamp,
   };
 }
 

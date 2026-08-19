@@ -33,4 +33,38 @@ describe("sync state", () => {
     expect(state.shouldNotify("personal-1", "work", "conflict", "title")).toBe(false);
     state.close();
   });
+
+  it("stores relationship and parent synchronization state", () => {
+    const directory = mkdtempSync(join(tmpdir(), "linear-sync-relationship-state-"));
+    const state = new SyncState(join(directory, "state.db"));
+    const relationship = {
+      externalWorkspaceKey: "work",
+      personalIssueId: "personal-1",
+      personalRelatedIssueId: "personal-2",
+      relationType: "blocks",
+      personalPresent: true,
+      externalPresent: false,
+      personalUpdatedAt: "2026-01-01T00:00:00.000Z",
+      externalUpdatedAt: null,
+      personalManaged: false,
+      externalManaged: true,
+    };
+    state.putRelationshipState(relationship);
+    expect(state.getRelationshipState("work", "personal-1", "personal-2", "blocks")).toEqual(relationship);
+    expect(state.listRelationshipStates("work")).toEqual([relationship]);
+
+    const parent = {
+      externalWorkspaceKey: "work",
+      personalIssueId: "personal-2",
+      personalParentIssueId: "personal-1",
+      externalParentIssueId: "work-1",
+      personalUpdatedAt: "2026-01-01T00:00:00.000Z",
+      externalUpdatedAt: "2026-01-01T00:00:01.000Z",
+      personalManaged: false,
+      externalManaged: true,
+    };
+    state.putParentState(parent);
+    expect(state.getParentState("work", "personal-2")).toEqual(parent);
+    state.close();
+  });
 });

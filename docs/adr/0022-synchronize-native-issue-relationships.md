@@ -1,0 +1,5 @@
+# Synchronize native issue relationships with mapped endpoints
+
+Status: accepted
+
+Native Linear issue relationships, including parent-child subissues, dependencies, related issues, and duplicate links, are synchronized independently for each one-to-one personal/external mapping. A relationship is copied only when both endpoints have mappings; otherwise it remains untouched unless the related personal issue carries the configured destination sync label, in which case the issue is created through the existing explicit-destination flow. Relationships are evaluated as direct edges from each issue rather than by recursively walking a subissue tree. Unilateral relationship changes propagate, previously managed counterparts may be removed, and when both sides edit the same edge the latest Linear edit wins. Existing target-local relationships are preserved, external workspaces receive no sync labels, and issue identity is never guessed. This supersedes the relationship-locality decision in ADR 0007 and the relationship-specific conflict behavior in ADR 0016.
