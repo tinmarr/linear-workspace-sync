@@ -97,7 +97,7 @@ A task attribute included in two-way synchronization for the MVP: title, descrip
 _Avoid_: synced metadata, mirrored field
 
 **Workspace-local metadata**:
-Issue information that remains owned by each workspace and is not overwritten by synchronization, including ordinary labels, team, cycle, parent, blocked or related links, and comments. Assignee is initialized in both workspaces when a personal issue creates a new external mapping, then reflected one way from external to personal.
+Issue information that remains owned by each workspace and is not overwritten by synchronization, including ordinary labels, team, cycle, and comments. Assignee is initialized in both workspaces when a personal issue creates a new external mapping, then reflected one way from external to personal. Native issue relationships are governed separately by the relationship synchronization rules.
 _Avoid_: unsupported metadata, local-only field
 
 **Assignee reflection**:
@@ -151,3 +151,20 @@ _Avoid_: database secret, checked-in token
 **Text-matched label**:
 A configured Linear label identified by its exact text within a workspace rather than by an internal identifier.
 _Avoid_: label ID, fuzzy label match
+
+## Issue relationships
+
+**Issue relationship**:
+A native Linear connection between two issues, such as related, blocks, duplicate, or parent-child.
+
+**Dependency**:
+An issue relationship that expresses ordering or prerequisite work, especially blocks or blocked by.
+
+**Subissue**:
+An issue that has a parent issue in an issue hierarchy.
+
+**Managed relationship**:
+An issue relationship that synchronization has copied or is tracking between corresponding issues.
+
+**Relationship synchronization**:
+The synchronization of native issue relationships between corresponding issues, including parent-child hierarchy, dependencies, related issues, and duplicate links.

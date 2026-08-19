@@ -45,6 +45,11 @@ describe("SDK issue hydration", () => {
       labelIds: ["label-routing"],
       stateId: "state-todo",
       assigneeId: "viewer",
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      parentId: null,
+      relations: async () => connection([]),
+      inverseRelations: async () => connection([]),
+      history: async () => connection([]),
       labels: () => {
         throw new Error("per-issue label lookup should not run");
       },
@@ -118,6 +123,120 @@ describe("SDK issue hydration", () => {
     expect(stateQueries).toBe(1);
     expect(exactIssueQueries).toBe(0);
     expect(observedFilter).toMatchObject({ completedAt: { null: true } });
+  });
+
+  it("hydrates native relationships once and exposes relation mutations", async () => {
+    const appConfig = config(":memory:");
+    const connection = <T>(nodes: T[]) => ({
+      nodes,
+      pageInfo: { hasNextPage: false },
+      fetchNext: async () => connection([]),
+    });
+    const relation = {
+      id: "relation-1",
+      issueId: "personal-1",
+      relatedIssueId: "personal-2",
+      type: "related",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-02T00:00:00.000Z"),
+    };
+    const inverseRelation = {
+      id: "relation-2",
+      issueId: "personal-3",
+      relatedIssueId: "personal-1",
+      type: "blocks",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-03T00:00:00.000Z"),
+    };
+    const createdRelation = {
+      id: "relation-3",
+      issueId: "personal-1",
+      relatedIssueId: "personal-4",
+      type: "duplicate",
+      createdAt: new Date("2026-01-04T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-04T00:00:00.000Z"),
+    };
+    const sourceIssue = {
+      id: "personal-1",
+      identifier: "PER-1",
+      url: "https://linear.app/personal/issue/PER-1",
+      title: "Task",
+      description: null,
+      dueDate: null,
+      estimate: null,
+      priority: 0,
+      archivedAt: null,
+      trashed: false,
+      labelIds: [],
+      stateId: "state-todo",
+      assigneeId: null,
+      updatedAt: new Date("2026-01-04T00:00:00.000Z"),
+      parentId: "personal-parent",
+      relations: async () => connection([relation]),
+      inverseRelations: async () => connection([relation, inverseRelation]),
+      history: async () => connection([{
+        updatedAt: new Date("2026-01-03T00:00:00.000Z"),
+        fromParentId: null,
+        toParentId: "personal-parent",
+        relationChanges: [{ type: "removed", identifier: "PER-3" }],
+      }]),
+    };
+    const createdInputs: unknown[] = [];
+    const deletedIds: string[] = [];
+    const team = {
+      id: "team-personal",
+      name: "Personal",
+      states: async () => connection([{ id: "state-todo", name: "Todo", archivedAt: null }]),
+      labels: async () => connection([]),
+    };
+    const client = {
+      issue: async () => sourceIssue,
+      teams: async () => connection([team]),
+      issueLabels: async () => connection([]),
+      attachments: async () => connection([]),
+      createIssueRelation: async (input: unknown) => {
+        createdInputs.push(input);
+        return { issueRelation: Promise.resolve(createdRelation) };
+      },
+      deleteIssueRelation: async (relationId: string) => {
+        deletedIds.push(relationId);
+        return { success: true };
+      },
+    };
+    const Workspace = SdkLinearWorkspace as unknown as new (...args: any[]) => SdkLinearWorkspace;
+    const workspace = new Workspace(
+      "personal",
+      appConfig.personal,
+      client,
+      { id: "viewer", email: "me@example.com", url: "https://linear.app/personal" },
+      appConfig.external,
+    );
+
+    const hydrated = await workspace.getIssue("PER-1", false, true);
+    const created = await workspace.createIssueRelation({
+      issueId: "personal-1",
+      relatedIssueId: "personal-4",
+      type: "duplicate",
+    });
+    await workspace.deleteIssueRelation("relation-3");
+
+    expect(hydrated?.relations).toEqual([
+      expect.objectContaining({ id: "relation-1", updatedAt: "2026-01-02T00:00:00.000Z" }),
+      expect.objectContaining({ id: "relation-2", issueId: "personal-3" }),
+    ]);
+    expect(hydrated?.parentUpdatedAt).toBe("2026-01-03T00:00:00.000Z");
+    expect(hydrated?.relationChanges).toEqual([{
+      relatedIdentifier: "PER-3",
+      action: "removed",
+      updatedAt: "2026-01-03T00:00:00.000Z",
+    }]);
+    expect(created).toEqual(expect.objectContaining({ id: "relation-3", type: "duplicate" }));
+    expect(createdInputs).toEqual([{
+      issueId: "personal-1",
+      relatedIssueId: "personal-4",
+      type: "duplicate",
+    }]);
+    expect(deletedIds).toEqual(["relation-3"]);
   });
 });
 

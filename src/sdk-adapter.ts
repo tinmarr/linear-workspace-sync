@@ -2,11 +2,14 @@ import { LinearClient, LinearDocument } from "@linear/sdk";
 import {
   DEFAULT_NOTIFICATION_ACCESS_TOKEN_ENV,
   type AppConfig,
+  type IssueRelationChange,
+  type IssueRelationSnapshot,
   type WorkspaceConfig,
 } from "./domain.js";
 import type {
   ExternalIssueLink,
   IssueCreateInput,
+  IssueRelationCreateInput,
   IssueQuery,
   IssueUpdate,
   LinearIssue,
@@ -21,6 +24,7 @@ type Connection<T> = {
 };
 
 type SdkIssue = Awaited<ReturnType<LinearClient["issue"]>>;
+type SdkIssueRelation = Awaited<ReturnType<SdkIssue["relations"]>>["nodes"][number];
 type SdkTeam = Awaited<ReturnType<LinearClient["team"]>>;
 type SdkLabel = Awaited<ReturnType<LinearClient["issueLabels"]>>["nodes"][number];
 type SdkAttachment = Awaited<ReturnType<LinearClient["attachments"]>>["nodes"][number];
@@ -146,6 +150,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
         .map((issue) => this.toLinearIssue(issue, {
           includeLabels: query.includeLabels ?? this.linkTargets.length > 0,
           includeExternalLinks: query.includeExternalLinks ?? this.linkTargets.length > 0,
+          includeRelationships: query.includeRelationships ?? false,
         })),
     );
     for (const issue of result) {
@@ -155,14 +160,18 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     return result;
   }
 
-  public async getIssue(issueId: string, includeArchived = false): Promise<LinearIssue | null> {
+  public async getIssue(
+    issueId: string,
+    includeArchived = false,
+    includeRelationships = false,
+  ): Promise<LinearIssue | null> {
     logEvent("linear_issue_fetching", {
       workspace: this.config.name,
       issueId,
       includeArchived,
     });
     const cached = this.issueCache.get(issueId);
-    if (cached && (includeArchived || !cached.archived)) {
+    if (cached && !includeRelationships && (includeArchived || !cached.archived)) {
       logEvent("linear_issue_fetch_cached", { workspace: this.config.name, identifier: cached.identifier });
       return cached;
     }
@@ -172,7 +181,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
         logEvent("linear_issue_archived", { workspace: this.config.name, issueId });
         return null;
       }
-      const result = await this.toLinearIssue(issue);
+      const result = await this.toLinearIssue(issue, { includeRelationships });
       this.cacheIssue(result);
       logEvent("linear_issue_fetched", { workspace: this.config.name, identifier: result.identifier });
       return result;
@@ -227,6 +236,9 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     if (update.assigneeEmail !== undefined) {
       input.assigneeId = update.assigneeEmail === null ? null : await this.resolveUserId(update.assigneeEmail);
     }
+    if (update.parentIssueId !== undefined) {
+      input.parentId = update.parentIssueId;
+    }
     const payload = await this.client.updateIssue(issueId, input);
     const issue = await payload.issue;
     if (!issue) throw new Error(`Linear returned no issue after updateIssue(${issueId})`);
@@ -234,6 +246,42 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     const result = await this.toLinearIssue(issue);
     this.cacheIssue(result);
     return result;
+  }
+
+  public async createIssueRelation(input: IssueRelationCreateInput): Promise<IssueRelationSnapshot> {
+    logEvent("linear_issue_relation_creation_starting", {
+      workspace: this.config.name,
+      issueId: input.issueId,
+      relatedIssueId: input.relatedIssueId,
+      type: input.type,
+    });
+    const payload = await this.client.createIssueRelation({
+      issueId: input.issueId,
+      relatedIssueId: input.relatedIssueId,
+      type: input.type as LinearDocument.IssueRelationType,
+    });
+    const relation = await payload.issueRelation;
+    if (!relation) throw new Error("Linear returned no issue relation after createIssueRelation");
+    const result = this.toRelationSnapshot(relation);
+    logEvent("linear_issue_relation_created", {
+      workspace: this.config.name,
+      relationId: result.id,
+      type: result.type,
+    });
+    return result;
+  }
+
+  public async deleteIssueRelation(relationId: string): Promise<void> {
+    logEvent("linear_issue_relation_deletion_starting", {
+      workspace: this.config.name,
+      relationId,
+    });
+    const payload = await this.client.deleteIssueRelation(relationId);
+    if (!payload.success) throw new Error(`Linear failed to delete issue relation ${relationId}`);
+    logEvent("linear_issue_relation_deleted", {
+      workspace: this.config.name,
+      relationId,
+    });
   }
 
   public async restoreIssue(issueId: string): Promise<LinearIssue> {
@@ -285,7 +333,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
 
   private async toLinearIssue(
     issue: SdkIssue,
-    options: { includeLabels?: boolean; includeExternalLinks?: boolean } = {},
+    options: { includeLabels?: boolean; includeExternalLinks?: boolean; includeRelationships?: boolean } = {},
   ): Promise<LinearIssue> {
     logEvent("linear_issue_hydration_starting", { workspace: this.config.name, identifier: issue.identifier });
     const includeLabels = options.includeLabels ?? this.linkTargets.length > 0;
@@ -296,6 +344,9 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       includeLabels ? this.labelNamesForIssue(issue) : Promise.resolve([]),
       includeExternalLinks ? this.externalLinksForIssue(issue.id) : Promise.resolve([]),
     ]);
+    const relationships = options.includeRelationships
+      ? await this.relationshipsForIssue(issue)
+      : { parentUpdatedAt: null, relations: [], relationChanges: [] };
     const result = {
       id: issue.id,
       identifier: issue.identifier,
@@ -311,6 +362,11 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       archived: Boolean(issue.archivedAt || issue.trashed),
       labelNames,
       externalLinks,
+      updatedAt: this.timestamp(issue.updatedAt),
+      parentIssueId: issue.parentId ?? null,
+      parentUpdatedAt: relationships.parentUpdatedAt,
+      relations: relationships.relations,
+      relationChanges: relationships.relationChanges,
     };
     logEvent("linear_issue_hydration_completed", {
       workspace: this.config.name,
@@ -494,6 +550,64 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     return attachments
       .filter((attachment) => attachment.issueId === issueId)
       .flatMap((attachment) => this.extractExternalLinks([attachment.url]));
+  }
+
+  private async relationshipsForIssue(issue: SdkIssue): Promise<{
+    parentUpdatedAt: string | null;
+    relations: IssueRelationSnapshot[];
+    relationChanges: IssueRelationChange[];
+  }> {
+    const [relations, inverseRelations, history] = await Promise.all([
+      all(issue.relations({ first: 100 })),
+      all(issue.inverseRelations({ first: 100 })),
+      all(issue.history({ first: 100 })),
+    ]);
+    const relationById = new Map<string, IssueRelationSnapshot>();
+    for (const relation of [...relations, ...inverseRelations]) {
+      relationById.set(relation.id, this.toRelationSnapshot(relation));
+    }
+    const parentChanges = history.filter((entry) =>
+      entry.fromParentId !== undefined || entry.toParentId !== undefined,
+    );
+    const relationChanges = history.flatMap((entry) =>
+      (entry.relationChanges ?? []).flatMap((change) => {
+        const action: IssueRelationChange["action"] | undefined = change.type === "removed"
+          ? "removed"
+          : change.type === "added" ? "added" : undefined;
+        return action ? [{
+          relatedIdentifier: change.identifier,
+          action,
+          updatedAt: this.timestamp(entry.updatedAt),
+        }] : [];
+      }),
+    );
+    const parentUpdatedAt = parentChanges.length > 0
+      ? parentChanges
+        .map((entry) => this.timestamp(entry.updatedAt))
+        .sort()
+        .at(-1) ?? null
+      : null;
+    return {
+      parentUpdatedAt,
+      relations: [...relationById.values()],
+      relationChanges,
+    };
+  }
+
+  private toRelationSnapshot(relation: SdkIssueRelation): IssueRelationSnapshot {
+    return {
+      id: relation.id,
+      issueId: relation.issueId ?? "",
+      relatedIssueId: relation.relatedIssueId ?? "",
+      type: relation.type,
+      createdAt: this.timestamp(relation.createdAt),
+      updatedAt: this.timestamp(relation.updatedAt),
+    };
+  }
+
+  private timestamp(value: Date | string | undefined | null): string {
+    if (!value) return "";
+    return value instanceof Date ? value.toISOString() : value;
   }
 
   private async loadAttachmentCatalog(): Promise<SdkAttachment[]> {

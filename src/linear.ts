@@ -1,4 +1,9 @@
-import type { IssueSnapshot, WorkspaceKey } from "./domain.js";
+import type {
+  IssueRelationChange,
+  IssueRelationSnapshot,
+  IssueSnapshot,
+  WorkspaceKey,
+} from "./domain.js";
 
 export type ExternalIssueLink = {
   workspaceKey: WorkspaceKey;
@@ -8,6 +13,11 @@ export type ExternalIssueLink = {
 
 export type LinearIssue = IssueSnapshot & {
   externalLinks: ExternalIssueLink[];
+  updatedAt: string;
+  parentIssueId: string | null;
+  parentUpdatedAt: string | null;
+  relations: IssueRelationSnapshot[];
+  relationChanges: IssueRelationChange[];
 };
 
 export type IssueCreateInput = {
@@ -27,6 +37,13 @@ export type IssueUpdate = Partial<
   >
 > & {
   assigneeEmail?: string | null;
+  parentIssueId?: string | null;
+};
+
+export type IssueRelationCreateInput = {
+  issueId: string;
+  relatedIssueId: string;
+  type: string;
 };
 
 export type IssueQuery = {
@@ -35,6 +52,7 @@ export type IssueQuery = {
   includeArchived?: boolean;
   includeLabels?: boolean;
   includeExternalLinks?: boolean;
+  includeRelationships?: boolean;
   excludeCompleted?: boolean;
 };
 
@@ -44,10 +62,12 @@ export interface LinearWorkspace {
   readonly viewerEmail: string;
 
   listIssues(query: IssueQuery): Promise<LinearIssue[]>;
-  getIssue(issueId: string, includeArchived?: boolean): Promise<LinearIssue | null>;
+  getIssue(issueId: string, includeArchived?: boolean, includeRelationships?: boolean): Promise<LinearIssue | null>;
   listStatusNames(teamName: string): Promise<Set<string>>;
   createIssue(input: IssueCreateInput, teamName: string): Promise<LinearIssue>;
   updateIssue(issueId: string, update: IssueUpdate): Promise<LinearIssue>;
+  createIssueRelation(input: IssueRelationCreateInput): Promise<IssueRelationSnapshot>;
+  deleteIssueRelation(relationId: string): Promise<void>;
   restoreIssue(issueId: string): Promise<LinearIssue>;
   ensureLabel(text: string): Promise<void>;
   addLabel(issueId: string, text: string): Promise<void>;
