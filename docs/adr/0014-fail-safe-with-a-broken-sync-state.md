@@ -1,0 +1,3 @@
+# Fail safe with a broken sync state
+
+Any unexpected or unsupported condition that is not a detected field conflict uses a personal-only `sync:broken` state label and one comment mentioning the user. The engine may automatically create any missing `sync:*` control label in the personal workspace, including routing, conflict, and broken-state labels. It never creates sync-control labels in external workspaces. The engine pauses the affected mapping or operation, preserves existing issue data, and does not guess, silently relink, or mutate the external issue. Field conflicts use the dedicated alert-only conflict flow.
