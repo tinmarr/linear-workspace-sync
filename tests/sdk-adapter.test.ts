@@ -296,3 +296,114 @@ describe("SDK notification client", () => {
     expect(humanCalls).toEqual(["issueAddLabel"]);
   });
 });
+
+describe("SDK project hydration and mutations", () => {
+  it("hydrates project status, roles, labels, links, and project mutations", async () => {
+    const appConfig = config(":memory:");
+    const connection = <T>(nodes: T[]) => ({
+      nodes,
+      pageInfo: { hasNextPage: false },
+      fetchNext: async () => connection([]),
+    });
+    const project = {
+      id: "personal-project",
+      url: "https://linear.app/personal/project/personal-project",
+      name: "Shared project",
+      description: "Description",
+      priority: 2,
+      startDate: "2026-01-01",
+      targetDate: "2026-03-01",
+      archivedAt: null,
+      trashed: false,
+      updatedAt: new Date("2026-01-02T00:00:00.000Z"),
+      leadId: "viewer",
+      status: Promise.resolve({ name: "In Progress", type: "started" }),
+      members: () => connection([{ id: "viewer" }]),
+      labels: () => connection([{ name: "sync:work", archivedAt: null }]),
+      externalLinks: () => connection([{
+        url: "https://linear.app/work/project/work-project",
+      }]),
+    };
+    const team = {
+      id: "team-personal",
+      name: "Personal",
+      states: async () => connection([]),
+      labels: async () => connection([]),
+    };
+    const createdInputs: unknown[] = [];
+    const updatedInputs: unknown[] = [];
+    const client = {
+      projects: async () => connection([project]),
+      project: async () => project,
+      projectStatuses: async () => connection([
+        { id: "status-started", name: "In Progress", type: "started", archivedAt: null },
+        { id: "status-backlog", name: "Backlog", type: "backlog", archivedAt: null },
+      ]),
+      teams: async () => connection([team]),
+      createProject: async (input: unknown) => {
+        createdInputs.push(input);
+        return { project: Promise.resolve(project) };
+      },
+      updateProject: async (_id: string, input: unknown) => {
+        updatedInputs.push(input);
+        return { project: Promise.resolve(project) };
+      },
+      projectLabels: async () => connection([{ id: "project-label", name: "sync:work", archivedAt: null }]),
+      projectAddLabel: async () => undefined,
+      projectRemoveLabel: async () => undefined,
+      createEntityExternalLink: async () => undefined,
+    };
+    const Workspace = SdkLinearWorkspace as unknown as new (...args: any[]) => SdkLinearWorkspace;
+    const workspace = new Workspace(
+      "personal",
+      appConfig.personal,
+      client,
+      { id: "viewer", email: "me@example.com", url: "https://linear.app/personal" },
+      appConfig.external,
+    );
+
+    const projects = await workspace.listProjects({
+      teamName: "Personal",
+      includeLabels: true,
+      includeExternalLinks: true,
+    });
+    const created = await workspace.createProject({
+      name: "Created project",
+      description: null,
+      statusName: "In Progress",
+      priority: 2,
+      startDate: null,
+      targetDate: null,
+      leadAssigned: true,
+      memberAssigned: true,
+    }, "Personal");
+    await workspace.updateProject("personal-project", {
+      name: "Renamed project",
+      leadAssigned: false,
+      memberAssigned: false,
+    });
+    await workspace.ensureProjectLabel("sync:work");
+    await workspace.addPersonalProjectLink("personal-project", "https://linear.app/work/project/work-project", "Work project");
+
+    expect(projects[0]).toMatchObject({
+      statusName: "In Progress",
+      statusType: "started",
+      leadAssigned: true,
+      memberAssigned: true,
+      labelNames: ["sync:work"],
+      externalLinks: [{ workspaceKey: "work", projectId: "work-project" }],
+    });
+    expect(created.name).toBe("Shared project");
+    expect(createdInputs).toEqual([expect.objectContaining({
+      teamIds: ["team-personal"],
+      statusId: "status-started",
+      leadId: "viewer",
+      memberIds: ["viewer"],
+    })]);
+    expect(updatedInputs).toEqual([expect.objectContaining({
+      name: "Renamed project",
+      leadId: null,
+      memberIds: [],
+    })]);
+  });
+});

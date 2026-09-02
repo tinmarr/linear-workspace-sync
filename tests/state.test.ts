@@ -67,4 +67,57 @@ describe("sync state", () => {
     expect(state.getParentState("work", "personal-2")).toEqual(parent);
     state.close();
   });
+
+  it("stores project mappings, snapshots, and project membership state", () => {
+    const directory = mkdtempSync(join(tmpdir(), "linear-sync-project-state-"));
+    const state = new SyncState(join(directory, "state.db"));
+    const mapping = {
+      personalProjectId: "personal-project",
+      externalWorkspaceKey: "work",
+      externalProjectId: "work-project",
+      personalProjectUrl: "https://linear.app/personal/project/personal-project",
+      externalProjectUrl: "https://linear.app/work/project/work-project",
+      active: true,
+      conflict: false,
+      broken: false,
+    };
+    state.upsertProjectMapping(mapping);
+    expect(state.getProjectMapping("personal-project", "work")).toEqual(mapping);
+    expect(state.findProjectMappingByExternal("work", "work-project")).toEqual(mapping);
+
+    const snapshot = {
+      id: "personal-project",
+      url: mapping.personalProjectUrl,
+      workspaceKey: "personal",
+      name: "Shared project",
+      description: null,
+      statusName: "Backlog",
+      statusType: "backlog",
+      priority: 0,
+      startDate: null,
+      targetDate: null,
+      leadAssigned: true,
+      memberAssigned: false,
+      archived: false,
+      labelNames: [],
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    state.putProjectSnapshot(snapshot, "work");
+    expect(state.getProjectSnapshot("personal-project", "work")).toEqual(snapshot);
+
+    const membership = {
+      externalWorkspaceKey: "work",
+      personalIssueId: "personal-issue",
+      personalProjectId: "personal-project",
+      externalProjectId: "work-project",
+      personalUpdatedAt: "2026-01-01T00:00:00.000Z",
+      externalUpdatedAt: "2026-01-01T00:00:00.000Z",
+      personalManaged: true,
+      externalManaged: true,
+    };
+    state.putProjectMembershipState(membership);
+    expect(state.getProjectMembershipState("work", "personal-issue")).toEqual(membership);
+    expect(state.listProjectMembershipStates("work")).toEqual([membership]);
+    state.close();
+  });
 });

@@ -168,3 +168,52 @@ An issue relationship that synchronization has copied or is tracking between cor
 
 **Relationship synchronization**:
 The synchronization of native issue relationships between corresponding issues, including parent-child hierarchy, dependencies, related issues, and duplicate links.
+
+## Projects
+
+**Project**:
+A Linear collection of issues organized around a shared goal, with its own lifecycle, dates, priority, description, and user assignments.
+
+**Project mapping**:
+The managed relationship between a personal project and an external project that represent the same project in one external workspace. It is treated like other synchronized relationships and remains independent after an issue has triggered or established it.
+_Avoid_: project mirror, project association
+
+**Project link**:
+A link on a personal project that identifies the external project paired with it and takes precedence over label-based creation or discovery decisions.
+_Avoid_: project backlink, project URL marker
+
+**Project routing**:
+The personal-project signal that opts a project into synchronization with one external workspace, following the same explicit routing model as synchronized issues.
+_Avoid_: project import flag, project destination guess
+
+**Project sync trigger**:
+An explicit personal project route or an otherwise eligible inbound issue that belongs to an external project. A trigger may establish a project mapping, but issues do not control that mapping afterward.
+_Avoid_: project sync dependency, issue-driven project lifecycle
+
+**Inbound project trigger**:
+An otherwise eligible inbound issue whose external project is not yet represented personally and therefore causes that project to be brought into the personal workspace.
+_Avoid_: project-wide import, automatic project discovery
+
+**Project field**:
+A project attribute synchronized between mapped projects for the MVP: name, description, status, priority, start date, or target date.
+_Avoid_: project metadata, project mirror field
+
+**Project issue membership**:
+The relationship that places a mapped issue in a mapped project and is synchronized only when both the issue and project mappings exist. Its additions, removals, and latest-edit behavior follow the managed relationship rules used for subissues and native issue relationships.
+_Avoid_: project assignment, issue grouping
+
+**Project assignment**:
+The authenticated user's role on a project, including project lead or project member, which is synchronized between mapped projects.
+_Avoid_: project ownership, project responsibility
+
+**Project status mapping**:
+A separate correspondence between project lifecycle statuses in two workspaces, using known hard-coded correspondences when available and exact status-name matching otherwise.
+_Avoid_: workflow status mapping, issue status mapping, project state guess
+
+**Independent project synchronization**:
+The rule that a project mapping manages its own fields, assignments, and lifecycle after creation; an issue may trigger project creation but cannot later control the project mapping.
+_Avoid_: issue-driven project sync, derived project mapping
+
+**Orphaned project mapping**:
+A project mapping whose external project is unavailable. Archived projects are ignored silently, without a broken marker, notification, or automatic issue mutation.
+_Avoid_: deleted project mapping, missing project

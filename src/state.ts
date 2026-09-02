@@ -5,6 +5,9 @@ import type {
   IssueSnapshot,
   MappingRecord,
   ParentSyncState,
+  ProjectMappingRecord,
+  ProjectMembershipSyncState,
+  ProjectSnapshot,
   RelationshipSyncState,
   WorkspaceKey,
 } from "./domain.js";
@@ -18,6 +21,28 @@ type MappingRow = {
   active: number;
   conflict: number;
   broken: number;
+};
+
+type ProjectMappingRow = {
+  personal_project_id: string;
+  external_workspace_key: string;
+  external_project_id: string;
+  personal_project_url: string;
+  external_project_url: string;
+  active: number;
+  conflict: number;
+  broken: number;
+};
+
+type ProjectMembershipRow = {
+  external_workspace_key: string;
+  personal_issue_id: string;
+  personal_project_id: string | null;
+  external_project_id: string | null;
+  personal_updated_at: string | null;
+  external_updated_at: string | null;
+  personal_managed: number;
+  external_managed: number;
 };
 
 type RelationshipRow = {
@@ -154,6 +179,186 @@ export class SyncState {
         active: mapping.active ? 1 : 0,
         conflict: mapping.conflict ? 1 : 0,
         broken: mapping.broken ? 1 : 0,
+      });
+  }
+
+  public getProjectMapping(
+    personalProjectId: string,
+    externalWorkspaceKey: WorkspaceKey,
+  ): ProjectMappingRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT personal_project_id, external_workspace_key, external_project_id,
+                personal_project_url, external_project_url, active, conflict, broken
+           FROM project_mappings
+          WHERE personal_project_id = ? AND external_workspace_key = ?`,
+      )
+      .get(personalProjectId, externalWorkspaceKey) as ProjectMappingRow | undefined;
+    return row ? this.projectMappingFromRow(row) : undefined;
+  }
+
+  public findProjectMappingByExternal(
+    externalWorkspaceKey: WorkspaceKey,
+    externalProjectId: string,
+  ): ProjectMappingRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT personal_project_id, external_workspace_key, external_project_id,
+                personal_project_url, external_project_url, active, conflict, broken
+           FROM project_mappings
+          WHERE external_workspace_key = ? AND external_project_id = ?`,
+      )
+      .get(externalWorkspaceKey, externalProjectId) as ProjectMappingRow | undefined;
+    return row ? this.projectMappingFromRow(row) : undefined;
+  }
+
+  public listProjectMappings(): ProjectMappingRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT personal_project_id, external_workspace_key, external_project_id,
+                personal_project_url, external_project_url, active, conflict, broken
+           FROM project_mappings
+          ORDER BY personal_project_id, external_workspace_key`,
+      )
+      .all() as ProjectMappingRow[];
+    return rows.map((row) => this.projectMappingFromRow(row));
+  }
+
+  public upsertProjectMapping(mapping: ProjectMappingRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO project_mappings(
+          personal_project_id, external_workspace_key, external_project_id,
+          personal_project_url, external_project_url, active, conflict, broken
+        ) VALUES (@personalProjectId, @externalWorkspaceKey, @externalProjectId,
+          @personalProjectUrl, @externalProjectUrl, @active, @conflict, @broken)
+        ON CONFLICT(personal_project_id, external_workspace_key) DO UPDATE SET
+          external_project_id = excluded.external_project_id,
+          personal_project_url = excluded.personal_project_url,
+          external_project_url = excluded.external_project_url,
+          active = excluded.active,
+          conflict = excluded.conflict,
+          broken = excluded.broken`,
+      )
+      .run({
+        ...mapping,
+        active: mapping.active ? 1 : 0,
+        conflict: mapping.conflict ? 1 : 0,
+        broken: mapping.broken ? 1 : 0,
+      });
+  }
+
+  public replaceProjectMapping(
+    previousPersonalProjectId: string,
+    mapping: ProjectMappingRecord,
+  ): void {
+    const transaction = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `DELETE FROM project_mappings
+            WHERE personal_project_id = ? AND external_workspace_key = ?`,
+        )
+        .run(previousPersonalProjectId, mapping.externalWorkspaceKey);
+      this.db
+        .prepare(
+          `DELETE FROM project_snapshots
+            WHERE personal_project_id = ? AND external_workspace_key = ?`,
+        )
+        .run(previousPersonalProjectId, mapping.externalWorkspaceKey);
+      this.db
+        .prepare(
+          `DELETE FROM project_notifications
+            WHERE personal_project_id = ? AND external_workspace_key = ?`,
+        )
+        .run(previousPersonalProjectId, mapping.externalWorkspaceKey);
+      this.db
+        .prepare(
+          `DELETE FROM project_membership_snapshots
+            WHERE external_workspace_key = ? AND personal_project_id = ?`,
+        )
+        .run(mapping.externalWorkspaceKey, previousPersonalProjectId);
+      this.upsertProjectMapping(mapping);
+    });
+    transaction();
+  }
+
+  public getProjectSnapshot(
+    personalProjectId: string,
+    externalWorkspaceKey: WorkspaceKey,
+  ): ProjectSnapshot | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT value_json FROM project_snapshots
+          WHERE personal_project_id = ? AND external_workspace_key = ?`,
+      )
+      .get(personalProjectId, externalWorkspaceKey) as { value_json?: string } | undefined;
+    return row?.value_json ? (JSON.parse(row.value_json) as ProjectSnapshot) : undefined;
+  }
+
+  public putProjectSnapshot(snapshot: ProjectSnapshot, externalWorkspaceKey: WorkspaceKey): void {
+    this.db
+      .prepare(
+        `INSERT INTO project_snapshots(personal_project_id, external_workspace_key, value_json)
+         VALUES (?, ?, ?)
+         ON CONFLICT(personal_project_id, external_workspace_key) DO UPDATE SET
+           value_json = excluded.value_json`,
+      )
+      .run(snapshot.id, externalWorkspaceKey, JSON.stringify(snapshot));
+  }
+
+  public getProjectMembershipState(
+    externalWorkspaceKey: WorkspaceKey,
+    personalIssueId: string,
+  ): ProjectMembershipSyncState | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT external_workspace_key, personal_issue_id,
+                personal_project_id, external_project_id,
+                personal_updated_at, external_updated_at,
+                personal_managed, external_managed
+           FROM project_membership_snapshots
+          WHERE external_workspace_key = ? AND personal_issue_id = ?`,
+      )
+      .get(externalWorkspaceKey, personalIssueId) as ProjectMembershipRow | undefined;
+    return row ? this.projectMembershipFromRow(row) : undefined;
+  }
+
+  public listProjectMembershipStates(externalWorkspaceKey: WorkspaceKey): ProjectMembershipSyncState[] {
+    const rows = this.db
+      .prepare(
+        `SELECT external_workspace_key, personal_issue_id,
+                personal_project_id, external_project_id,
+                personal_updated_at, external_updated_at,
+                personal_managed, external_managed
+           FROM project_membership_snapshots
+          WHERE external_workspace_key = ?`,
+      )
+      .all(externalWorkspaceKey) as ProjectMembershipRow[];
+    return rows.map((row) => this.projectMembershipFromRow(row));
+  }
+
+  public putProjectMembershipState(state: ProjectMembershipSyncState): void {
+    this.db
+      .prepare(
+        `INSERT INTO project_membership_snapshots(
+          external_workspace_key, personal_issue_id,
+          personal_project_id, external_project_id,
+          personal_updated_at, external_updated_at, personal_managed, external_managed
+        ) VALUES (@externalWorkspaceKey, @personalIssueId,
+          @personalProjectId, @externalProjectId,
+          @personalUpdatedAt, @externalUpdatedAt, @personalManaged, @externalManaged)
+        ON CONFLICT(external_workspace_key, personal_issue_id) DO UPDATE SET
+          personal_project_id = excluded.personal_project_id,
+          external_project_id = excluded.external_project_id,
+          personal_updated_at = excluded.personal_updated_at,
+          external_updated_at = excluded.external_updated_at,
+          personal_managed = excluded.personal_managed,
+          external_managed = excluded.external_managed`,
+      )
+      .run({
+        ...state,
+        personalManaged: state.personalManaged ? 1 : 0,
+        externalManaged: state.externalManaged ? 1 : 0,
       });
   }
 
@@ -344,6 +549,43 @@ export class SyncState {
       .run(personalIssueId, externalWorkspaceKey);
   }
 
+  public clearProjectConflict(
+    personalProjectId: string,
+    externalWorkspaceKey: WorkspaceKey,
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE project_mappings SET conflict = 0
+          WHERE personal_project_id = ? AND external_workspace_key = ?`,
+      )
+      .run(personalProjectId, externalWorkspaceKey);
+  }
+
+  public setProjectConflict(
+    personalProjectId: string,
+    externalWorkspaceKey: WorkspaceKey,
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE project_mappings SET conflict = 1
+          WHERE personal_project_id = ? AND external_workspace_key = ?`,
+      )
+      .run(personalProjectId, externalWorkspaceKey);
+  }
+
+  public setProjectBroken(
+    personalProjectId: string,
+    externalWorkspaceKey: WorkspaceKey,
+    broken: boolean,
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE project_mappings SET broken = ?
+          WHERE personal_project_id = ? AND external_workspace_key = ?`,
+      )
+      .run(broken ? 1 : 0, personalProjectId, externalWorkspaceKey);
+  }
+
   public setConflict(
     personalIssueId: string,
     externalWorkspaceKey: WorkspaceKey,
@@ -398,6 +640,35 @@ export class SyncState {
       .run(personalIssueId, externalWorkspaceKey, code);
   }
 
+  public shouldNotifyProject(
+    personalProjectId: string,
+    externalWorkspaceKey: WorkspaceKey,
+    code: string,
+    fingerprint: string,
+  ): boolean {
+    const result = this.db
+      .prepare(
+        `INSERT OR IGNORE INTO project_notifications(
+          personal_project_id, external_workspace_key, code, fingerprint
+        ) VALUES (?, ?, ?, ?)`,
+      )
+      .run(personalProjectId, externalWorkspaceKey, code, fingerprint);
+    return result.changes > 0;
+  }
+
+  public clearProjectNotifications(
+    personalProjectId: string,
+    externalWorkspaceKey: WorkspaceKey,
+    code: string,
+  ): void {
+    this.db
+      .prepare(
+        `DELETE FROM project_notifications
+          WHERE personal_project_id = ? AND external_workspace_key = ? AND code = ?`,
+      )
+      .run(personalProjectId, externalWorkspaceKey, code);
+  }
+
   public recordFailure(scopeKey: string, issueId: string, message: string): number {
     const result = this.db
       .prepare(
@@ -448,6 +719,47 @@ export class SyncState {
         external_workspace_key TEXT NOT NULL,
         value_json TEXT NOT NULL,
         PRIMARY KEY (personal_issue_id, external_workspace_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS project_mappings (
+        personal_project_id TEXT NOT NULL,
+        external_workspace_key TEXT NOT NULL,
+        external_project_id TEXT NOT NULL,
+        personal_project_url TEXT NOT NULL,
+        external_project_url TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        conflict INTEGER NOT NULL DEFAULT 0,
+        broken INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (personal_project_id, external_workspace_key),
+        UNIQUE (external_workspace_key, external_project_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS project_snapshots (
+        personal_project_id TEXT NOT NULL,
+        external_workspace_key TEXT NOT NULL,
+        value_json TEXT NOT NULL,
+        PRIMARY KEY (personal_project_id, external_workspace_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS project_notifications (
+        personal_project_id TEXT NOT NULL,
+        external_workspace_key TEXT NOT NULL,
+        code TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (personal_project_id, external_workspace_key, code, fingerprint)
+      );
+
+      CREATE TABLE IF NOT EXISTS project_membership_snapshots (
+        external_workspace_key TEXT NOT NULL,
+        personal_issue_id TEXT NOT NULL,
+        personal_project_id TEXT,
+        external_project_id TEXT,
+        personal_updated_at TEXT,
+        external_updated_at TEXT,
+        personal_managed INTEGER NOT NULL,
+        external_managed INTEGER NOT NULL,
+        PRIMARY KEY (external_workspace_key, personal_issue_id)
       );
 
       CREATE TABLE IF NOT EXISTS notifications (
@@ -509,6 +821,32 @@ export class SyncState {
       active: row.active === 1,
       conflict: row.conflict === 1,
       broken: row.broken === 1,
+    };
+  }
+
+  private projectMappingFromRow(row: ProjectMappingRow): ProjectMappingRecord {
+    return {
+      personalProjectId: row.personal_project_id,
+      externalWorkspaceKey: row.external_workspace_key,
+      externalProjectId: row.external_project_id,
+      personalProjectUrl: row.personal_project_url,
+      externalProjectUrl: row.external_project_url,
+      active: row.active === 1,
+      conflict: row.conflict === 1,
+      broken: row.broken === 1,
+    };
+  }
+
+  private projectMembershipFromRow(row: ProjectMembershipRow): ProjectMembershipSyncState {
+    return {
+      externalWorkspaceKey: row.external_workspace_key,
+      personalIssueId: row.personal_issue_id,
+      personalProjectId: row.personal_project_id,
+      externalProjectId: row.external_project_id,
+      personalUpdatedAt: row.personal_updated_at,
+      externalUpdatedAt: row.external_updated_at,
+      personalManaged: row.personal_managed === 1,
+      externalManaged: row.external_managed === 1,
     };
   }
 

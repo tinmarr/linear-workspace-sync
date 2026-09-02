@@ -10,6 +10,11 @@ import { CORE_FIELDS } from "./domain.js";
 import type { ExternalIssueLink, IssueCreateInput, IssueUpdate, LinearIssue, LinearWorkspace } from "./linear.js";
 import { logEvent } from "./log.js";
 import { RelationshipSynchronizer } from "./relationship-sync.js";
+import {
+  ProjectSynchronizer,
+  type ProjectSyncContext,
+  type ProjectSyncResult,
+} from "./project-sync.js";
 import { SyncState } from "./state.js";
 
 type WorkspacePair = {
@@ -22,6 +27,7 @@ type ReconcileContext = {
   externalIssues: Map<WorkspaceKey, Map<string, LinearIssue>>;
   assignedExternalIds: Map<WorkspaceKey, Set<string>>;
   processedMappingKeys: Set<string>;
+  projectContext: ProjectSyncContext;
 };
 
 type MappingResult = {
@@ -32,6 +38,8 @@ type MappingResult = {
 export type ReconciliationResult = {
   createdInbound: number;
   createdOutbound: number;
+  createdInboundProjects: number;
+  createdOutboundProjects: number;
   updatedMappings: number;
   conflicts: number;
   broken: number;
@@ -49,6 +57,9 @@ export class ReconciliationEngine {
     logEvent("personal_sync_labels_starting");
     await this.ensurePersonalSyncLabels();
     logEvent("personal_sync_labels_ready");
+    const projectSynchronizer = new ProjectSynchronizer(this.config, this.personal, this.externals, this.state);
+    await projectSynchronizer.ensurePersonalLabels();
+    const projectRun = await projectSynchronizer.syncPersonalProjects();
     logEvent("personal_issue_discovery_starting", { team: this.config.personal.teamName });
     const personalIssues = await this.personal.listIssues({
       teamName: this.config.personal.teamName,
@@ -63,14 +74,18 @@ export class ReconciliationEngine {
       externalIssues: new Map(),
       assignedExternalIds: new Map(),
       processedMappingKeys: new Set(),
+      projectContext: projectRun.context,
     };
     const result: ReconciliationResult = {
       createdInbound: 0,
       createdOutbound: 0,
+      createdInboundProjects: 0,
+      createdOutboundProjects: 0,
       updatedMappings: 0,
       conflicts: 0,
       broken: 0,
     };
+    this.addProjectResult(result, projectRun.result);
 
     for (const issue of personalIssues) {
       logEvent("personal_issue_reconciliation_starting", {
@@ -78,9 +93,10 @@ export class ReconciliationEngine {
         identifier: issue.identifier,
       });
       try {
-        const outcome = await this.reconcilePersonalIssue(issue, context);
+        const outcome = await this.reconcilePersonalIssue(issue, context, projectSynchronizer);
         this.state.clearFailure("personal", issue.id);
         result.createdOutbound += outcome.createdOutbound;
+        this.addProjectCounters(result, outcome);
         result.updatedMappings += outcome.updatedMappings;
         result.conflicts += outcome.conflicts;
         result.broken += outcome.broken;
@@ -144,9 +160,10 @@ export class ReconciliationEngine {
           identifier: externalIssue.identifier,
         });
         try {
-          const outcome = await this.reconcileInboundIssue(pair, externalIssue, context);
+          const outcome = await this.reconcileInboundIssue(pair, externalIssue, context, projectSynchronizer);
           this.state.clearFailure(pair.externalConfig.key, externalIssue.id);
           result.createdInbound += outcome.createdInbound;
+          this.addProjectCounters(result, outcome);
           result.updatedMappings += outcome.updatedMappings;
           result.conflicts += outcome.conflicts;
           result.broken += outcome.broken;
@@ -196,9 +213,17 @@ export class ReconciliationEngine {
       const externalIssue = await pair.external.getIssue(mapping.externalIssueId, true);
       if (!personalIssue || personalIssue.archived) {
         if (externalIssue && !externalIssue.archived) {
+          if (externalIssue.projectId) {
+            const projectResult = await projectSynchronizer.ensureInboundProject(
+              pair,
+              externalIssue.projectId,
+              context.projectContext,
+            );
+            this.addProjectResult(result, projectResult.result);
+          }
           const replacementResult = personalIssue
             ? { issue: await this.personal.restoreIssue(personalIssue.id), statusMapped: true }
-            : await this.createInboundPersonalIssue(pair, externalIssue);
+            : await this.createInboundPersonalIssue(pair, externalIssue, context.projectContext);
           const replacement = replacementResult.issue;
           context.personalIssues.set(replacement.id, replacement);
           await this.ensurePersonalLinkAndLabel(replacement, pair, externalIssue);
@@ -243,6 +268,14 @@ export class ReconciliationEngine {
         this.state.upsertMapping({ ...mapping, active: false });
         continue;
       }
+      if (externalIssue.projectId) {
+        const projectResult = await projectSynchronizer.ensureInboundProject(
+          pair,
+          externalIssue.projectId,
+          context.projectContext,
+        );
+        this.addProjectResult(result, projectResult.result);
+      }
       try {
         if (!hasPersonalSignal && isAssignedExternally) {
           await this.ensurePersonalLinkAndLabel(personalIssue, pair, externalIssue);
@@ -254,6 +287,16 @@ export class ReconciliationEngine {
       } catch (error: unknown) {
         await this.handleFailure(pair.externalConfig.key, externalIssue.id, error, result, personalIssue);
       }
+    }
+
+    const mappedProjectResult = await projectSynchronizer.syncMappedProjects(context.projectContext);
+    this.addProjectResult(result, mappedProjectResult);
+    for (const pair of this.workspacePairs()) {
+      await projectSynchronizer.syncIssueProjectMembership(
+        context.personalIssues,
+        context.externalIssues.get(pair.externalConfig.key) ?? new Map(),
+        pair.externalConfig.key,
+      );
     }
 
     for (const pair of this.workspacePairs()) {
@@ -282,6 +325,7 @@ export class ReconciliationEngine {
   private async reconcilePersonalIssue(
     personalIssue: LinearIssue,
     context: ReconcileContext,
+    projectSynchronizer: ProjectSynchronizer,
   ): Promise<ReconciliationResult> {
     const result = this.emptyResult();
     const links = personalIssue.externalLinks;
@@ -311,6 +355,14 @@ export class ReconciliationEngine {
         await this.markMappingConflict(personalIssue, existing, pair);
         result.conflicts++;
         return result;
+      }
+      if (externalIssue.projectId) {
+        const projectResult = await projectSynchronizer.ensureInboundProject(
+          pair,
+          externalIssue.projectId,
+          context.projectContext,
+        );
+        this.addProjectResult(result, projectResult.result);
       }
       await this.ensurePersonalLinkAndLabel(personalIssue, pair, externalIssue);
       await this.persistMapping(personalIssue, pair.externalConfig, externalIssue, true);
@@ -344,6 +396,14 @@ export class ReconciliationEngine {
     if (existing) {
       const externalIssue = await pair.external.getIssue(existing.externalIssueId, true);
       if (externalIssue && !externalIssue.archived) {
+        if (externalIssue.projectId) {
+          const projectResult = await projectSynchronizer.ensureInboundProject(
+            pair,
+            externalIssue.projectId,
+            context.projectContext,
+          );
+          this.addProjectResult(result, projectResult.result);
+        }
         const mappingResult = await this.processMapping(personalIssue, pair, externalIssue, false, context.processedMappingKeys);
         result.conflicts += mappingResult.conflicts;
         result.broken += mappingResult.broken;
@@ -362,6 +422,13 @@ export class ReconciliationEngine {
       pair.external,
     );
     const outboundInput = this.toCreateInput(personalIssue, target);
+    if (personalIssue.projectId) {
+      const projectMapping = this.state.getProjectMapping(personalIssue.projectId, target.key);
+      if (projectMapping?.active) {
+        const externalProject = await pair.external.getProject(projectMapping.externalProjectId, true);
+        if (externalProject && !externalProject.archived) outboundInput.projectId = projectMapping.externalProjectId;
+      }
+    }
     outboundInput.statusName = outboundStatus.statusName;
     outboundInput.assigneeEmail = pair.external.viewerEmail;
     const created = await pair.external.createIssue(outboundInput, target.teamName);
@@ -382,14 +449,23 @@ export class ReconciliationEngine {
     pair: WorkspacePair,
     externalIssue: LinearIssue,
     context: ReconcileContext,
+    projectSynchronizer: ProjectSynchronizer,
   ): Promise<ReconciliationResult> {
     const result = this.emptyResult();
+    if (externalIssue.projectId) {
+      const projectResult = await projectSynchronizer.ensureInboundProject(
+        pair,
+        externalIssue.projectId,
+        context.projectContext,
+      );
+      this.addProjectResult(result, projectResult.result);
+    }
     const existing = this.state.findMappingByExternal(pair.externalConfig.key, externalIssue.id);
     if (existing) {
       const personalIssue = context.personalIssues.get(existing.personalIssueId)
         ?? await this.personal.getIssue(existing.personalIssueId, true);
       if (!personalIssue) {
-        const replacement = await this.createInboundPersonalIssue(pair, externalIssue);
+        const replacement = await this.createInboundPersonalIssue(pair, externalIssue, context.projectContext);
         context.personalIssues.set(replacement.issue.id, replacement.issue);
         await this.ensurePersonalLinkAndLabel(replacement.issue, pair, externalIssue);
         if (existing) {
@@ -424,7 +500,7 @@ export class ReconciliationEngine {
       return result;
     }
 
-    const replacement = await this.createInboundPersonalIssue(pair, externalIssue);
+    const replacement = await this.createInboundPersonalIssue(pair, externalIssue, context.projectContext);
     context.personalIssues.set(replacement.issue.id, replacement.issue);
     await this.ensurePersonalLinkAndLabel(replacement.issue, pair, externalIssue);
     await this.persistMapping(replacement.issue, pair.externalConfig, externalIssue, true);
@@ -561,6 +637,7 @@ export class ReconciliationEngine {
   private async createInboundPersonalIssue(
     pair: WorkspacePair,
     externalIssue: LinearIssue,
+    projectContext: ProjectSyncContext,
   ): Promise<{ issue: LinearIssue; statusMapped: boolean }> {
     const targetStatuses = await this.personal.listStatusNames(this.config.personal.teamName);
     const statusName = await this.mapStatusName(
@@ -568,11 +645,27 @@ export class ReconciliationEngine {
       pair.externalConfig,
       this.config.personal,
     );
+    const projectMapping = externalIssue.projectId
+      ? this.state.findProjectMappingByExternal(pair.externalConfig.key, externalIssue.projectId)
+      : undefined;
+    const mappedProject = projectMapping
+      ? projectContext.personalProjects.get(projectMapping.personalProjectId)
+      : undefined;
+    const projectKey = externalIssue.projectId
+      ? `${pair.externalConfig.key}\u0000${externalIssue.projectId}`
+      : undefined;
+    const projectId = mappedProject
+      && !mappedProject.archived
+      && projectKey
+      && !projectContext.ignoredExternalProjectKeys.has(projectKey)
+      ? mappedProject.id
+      : undefined;
     const issue = await this.personal.createIssue(
       {
         ...this.toCreateInput(externalIssue, this.config.personal),
         statusName: targetStatuses.has(statusName) ? statusName : null,
         assigneeEmail: this.personal.viewerEmail,
+        projectId,
       },
       this.config.personal.teamName,
     );
@@ -590,6 +683,7 @@ export class ReconciliationEngine {
       dueDate: issue.dueDate,
       estimate: issue.estimate,
       priority: issue.priority,
+      projectId: issue.projectId,
     };
   }
 
@@ -866,6 +960,7 @@ export class ReconciliationEngine {
       assigneeEmail: issue.assigneeEmail,
       archived: issue.archived,
       labelNames: issue.labelNames,
+      projectId: issue.projectId,
     };
   }
 
@@ -887,7 +982,31 @@ export class ReconciliationEngine {
   }
 
   private emptyResult(): ReconciliationResult {
-    return { createdInbound: 0, createdOutbound: 0, updatedMappings: 0, conflicts: 0, broken: 0 };
+    return {
+      createdInbound: 0,
+      createdOutbound: 0,
+      createdInboundProjects: 0,
+      createdOutboundProjects: 0,
+      updatedMappings: 0,
+      conflicts: 0,
+      broken: 0,
+    };
+  }
+
+  private addProjectResult(target: ReconciliationResult, source: ProjectSyncResult): void {
+    target.createdInboundProjects += source.createdInboundProjects;
+    target.createdOutboundProjects += source.createdOutboundProjects;
+    target.updatedMappings += source.updatedMappings;
+    target.conflicts += source.conflicts;
+    target.broken += source.broken;
+  }
+
+  private addProjectCounters(
+    target: ReconciliationResult,
+    source: Pick<ProjectSyncResult, "createdInboundProjects" | "createdOutboundProjects">,
+  ): void {
+    target.createdInboundProjects += source.createdInboundProjects;
+    target.createdOutboundProjects += source.createdOutboundProjects;
   }
 
   private async handleFailure(

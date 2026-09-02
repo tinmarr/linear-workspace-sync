@@ -2,6 +2,8 @@ import type {
   AppConfig,
   IssueRelationSnapshot,
   IssueSnapshot,
+  ProjectSnapshot,
+  ProjectStatus,
 } from "../src/domain.js";
 import type {
   IssueCreateInput,
@@ -9,19 +11,30 @@ import type {
   IssueRelationCreateInput,
   IssueUpdate,
   LinearIssue,
+  LinearProject,
   LinearWorkspace,
+  ProjectCreateInput,
+  ProjectQuery,
+  ProjectUpdate,
 } from "../src/linear.js";
 
 export class FakeWorkspace implements LinearWorkspace {
   public readonly viewerId: string;
   public readonly viewerEmail: string;
   public readonly issues = new Map<string, LinearIssue>();
+  public readonly projects = new Map<string, LinearProject>();
   public readonly labels = new Set<string>();
+  public readonly projectLabels = new Set<string>();
   public readonly comments: Array<{ issueId: string; body: string }> = [];
+  public readonly projectComments: Array<{ projectId: string; body: string }> = [];
   public readonly links: Array<{ issueId: string; url: string }> = [];
+  public readonly projectLinks: Array<{ projectId: string; url: string }> = [];
   public readonly listQueries: IssueQuery[] = [];
+  public readonly projectQueries: ProjectQuery[] = [];
   public getIssueCalls = 0;
+  public getProjectCalls = 0;
   private nextIssue = 1;
+  private nextProject = 1;
   private relationSequence = 1;
   private clock = 1;
 
@@ -48,6 +61,31 @@ export class FakeWorkspace implements LinearWorkspace {
     return issue ? structuredClone(issue) : null;
   }
 
+  public async listProjects(query: ProjectQuery): Promise<LinearProject[]> {
+    this.projectQueries.push(query);
+    return [...this.projects.values()]
+      .filter((project) => query.includeArchived || !project.archived)
+      .map((project) => structuredClone(project));
+  }
+
+  public async getProject(projectId: string, includeArchived = false): Promise<LinearProject | null> {
+    this.getProjectCalls++;
+    const project = this.projects.get(projectId);
+    if (!project || (!includeArchived && project.archived)) return null;
+    return structuredClone(project);
+  }
+
+  public async listProjectStatuses(): Promise<ProjectStatus[]> {
+    return [
+      { name: "Backlog", type: "backlog" },
+      { name: "Planned", type: "planned" },
+      { name: "In Progress", type: "started" },
+      { name: "Paused", type: "paused" },
+      { name: "Completed", type: "completed" },
+      { name: "Canceled", type: "canceled" },
+    ];
+  }
+
   public async listStatusNames(): Promise<Set<string>> {
     return new Set(this.statuses);
   }
@@ -69,6 +107,7 @@ export class FakeWorkspace implements LinearWorkspace {
       assigneeEmail: input.assigneeEmail ?? null,
       archived: false,
       labelNames: [],
+      projectId: input.projectId ?? null,
       externalLinks: [],
       updatedAt: this.timestamp(),
       parentIssueId: null,
@@ -78,6 +117,38 @@ export class FakeWorkspace implements LinearWorkspace {
     };
     this.issues.set(id, issue);
     return structuredClone(issue);
+  }
+
+  public async createProject(input: ProjectCreateInput): Promise<LinearProject> {
+    const id = `${this.key}-project-${this.nextProject++}`;
+    const project: LinearProject = {
+      id,
+      url: `https://linear.app/${this.key}/project/${id}`,
+      workspaceKey: this.key,
+      name: input.name,
+      description: input.description,
+      statusName: input.statusName ?? "Backlog",
+      statusType: input.statusName === "In Progress" ? "started" : "backlog",
+      priority: input.priority,
+      startDate: input.startDate,
+      targetDate: input.targetDate,
+      leadAssigned: input.leadAssigned,
+      memberAssigned: input.memberAssigned,
+      archived: false,
+      labelNames: [],
+      updatedAt: this.timestamp(),
+      externalLinks: [],
+    };
+    this.projects.set(id, project);
+    return structuredClone(project);
+  }
+
+  public async updateProject(projectId: string, update: ProjectUpdate): Promise<LinearProject> {
+    const project = this.projects.get(projectId);
+    if (!project) throw new Error(`Unknown project ${projectId}`);
+    Object.assign(project, update);
+    project.updatedAt = this.timestamp();
+    return structuredClone(project);
   }
 
   public async updateIssue(issueId: string, update: IssueUpdate): Promise<LinearIssue> {
@@ -172,6 +243,41 @@ export class FakeWorkspace implements LinearWorkspace {
     this.comments.push({ issueId, body });
   }
 
+  public async ensureProjectLabel(text: string): Promise<void> {
+    this.projectLabels.add(text);
+  }
+
+  public async addProjectLabel(projectId: string, text: string): Promise<void> {
+    const project = this.projects.get(projectId);
+    if (!project) throw new Error(`Unknown project ${projectId}`);
+    if (!project.labelNames.includes(text)) project.labelNames.push(text);
+    this.projectLabels.add(text);
+  }
+
+  public async removeProjectLabel(projectId: string, text: string): Promise<void> {
+    const project = this.projects.get(projectId);
+    if (!project) throw new Error(`Unknown project ${projectId}`);
+    project.labelNames = project.labelNames.filter((label) => label !== text);
+  }
+
+  public async addPersonalProjectLink(projectId: string, targetUrl: string): Promise<void> {
+    const project = this.projects.get(projectId);
+    if (!project) throw new Error(`Unknown project ${projectId}`);
+    this.projectLinks.push({ projectId, url: targetUrl });
+    const target = targetUrl.match(/linear\.app\/([^/]+)\/project\/([^/]+)/);
+    if (target) {
+      project.externalLinks.push({
+        workspaceKey: target[1],
+        projectId: target[2],
+        projectUrl: targetUrl,
+      });
+    }
+  }
+
+  public async addPersonalProjectNotification(projectId: string, body: string): Promise<void> {
+    this.projectComments.push({ projectId, body });
+  }
+
   public listRelationships(): IssueRelationSnapshot[] {
     return [...this.issues.values()]
       .flatMap((issue) => issue.relations)
@@ -186,7 +292,7 @@ export class FakeWorkspace implements LinearWorkspace {
 export function issue(
   workspaceKey: string,
   values: Partial<IssueSnapshot>
-    & Partial<Pick<LinearIssue, "parentIssueId" | "parentUpdatedAt" | "relations" | "relationChanges" | "updatedAt">>
+    & Partial<Pick<LinearIssue, "parentIssueId" | "parentUpdatedAt" | "relations" | "relationChanges" | "updatedAt" | "externalLinks">>
     & Pick<IssueSnapshot, "id" | "identifier" | "url" | "title" | "statusName">,
 ): LinearIssue {
   return {
@@ -203,7 +309,8 @@ export function issue(
     assigneeEmail: values.assigneeEmail ?? null,
     archived: values.archived ?? false,
     labelNames: values.labelNames ?? [],
-    externalLinks: [],
+    projectId: values.projectId ?? null,
+    externalLinks: values.externalLinks ?? [],
     updatedAt: values.updatedAt ?? "2026-01-01T00:00:00.000Z",
     parentIssueId: values.parentIssueId ?? null,
     parentUpdatedAt: values.parentUpdatedAt ?? null,
@@ -226,6 +333,32 @@ export function relation(
     type,
     createdAt: timestamp,
     updatedAt: timestamp,
+  };
+}
+
+export function project(
+  workspaceKey: string,
+  values: Pick<ProjectSnapshot, "id" | "url" | "name" | "statusName">
+    & Partial<ProjectSnapshot>
+    & Partial<Pick<LinearProject, "externalLinks">>,
+): LinearProject {
+  return {
+    id: values.id,
+    url: values.url,
+    workspaceKey,
+    name: values.name,
+    description: values.description ?? null,
+    statusName: values.statusName,
+    statusType: values.statusType ?? "backlog",
+    priority: values.priority ?? 0,
+    startDate: values.startDate ?? null,
+    targetDate: values.targetDate ?? null,
+    leadAssigned: values.leadAssigned ?? false,
+    memberAssigned: values.memberAssigned ?? false,
+    archived: values.archived ?? false,
+    labelNames: values.labelNames ?? [],
+    updatedAt: values.updatedAt ?? "2026-01-01T00:00:00.000Z",
+    externalLinks: values.externalLinks ?? [],
   };
 }
 
