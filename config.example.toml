@@ -17,8 +17,9 @@ workspace_name = "Work"
 workspace_slug = "work"
 team_name = "Work"
 routing_label = "sync:work"
-# Labels added to the corresponding synced issue in the personal workspace.
+# Labels added to the corresponding synced issue or project in the personal workspace.
 personal_labels = []
+# The routing_label is also recognized on personal projects as a project label.
 
 [external.startup]
 name = "startup"

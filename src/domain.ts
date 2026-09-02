@@ -82,6 +82,83 @@ export type IssueSnapshot = {
   assigneeEmail: string | null;
   archived: boolean;
   labelNames: string[];
+  projectId: string | null;
+  projectMilestoneId: string | null;
+};
+
+export type ProjectStatus = {
+  name: string;
+  type: string;
+};
+
+export type ProjectSnapshot = {
+  id: string;
+  url: string;
+  workspaceKey: WorkspaceKey;
+  name: string;
+  description: string | null;
+  statusName: string;
+  statusType: string;
+  priority: number;
+  startDate: string | null;
+  targetDate: string | null;
+  leadAssigned: boolean;
+  memberAssigned: boolean;
+  archived: boolean;
+  labelNames: string[];
+  updatedAt: string;
+};
+
+export type MilestoneSnapshot = {
+  id: string;
+  projectId: string;
+  workspaceKey: WorkspaceKey;
+  name: string;
+  description: string | null;
+  targetDate: string | null;
+  sortOrder: number;
+  archived: boolean;
+  updatedAt: string;
+};
+
+export type MilestoneMappingRecord = {
+  personalProjectId: string;
+  externalWorkspaceKey: WorkspaceKey;
+  externalProjectId: string;
+  personalMilestoneId: string;
+  externalMilestoneId: string;
+  active: boolean;
+  conflict: boolean;
+  broken: boolean;
+};
+
+export type MilestoneSnapshotPair = {
+  personal: MilestoneSnapshot;
+  external: MilestoneSnapshot;
+};
+
+export type ProjectMappingRecord = {
+  personalProjectId: string;
+  externalWorkspaceKey: WorkspaceKey;
+  externalProjectId: string;
+  personalProjectUrl: string;
+  externalProjectUrl: string;
+  active: boolean;
+  conflict: boolean;
+  broken: boolean;
+};
+
+export type ProjectMembershipSyncState = {
+  externalWorkspaceKey: WorkspaceKey;
+  personalIssueId: string;
+  personalProjectId: string | null;
+  externalProjectId: string | null;
+  personalMilestoneId: string | null;
+  externalMilestoneId: string | null;
+  personalUpdatedAt: string | null;
+  externalUpdatedAt: string | null;
+  personalManaged: boolean;
+  externalManaged: boolean;
 };
 
 export type MappingRecord = {
@@ -103,6 +180,16 @@ export type CoreField =
   | "estimate"
   | "priority";
 
+export type ProjectField =
+  | "name"
+  | "description"
+  | "statusName"
+  | "priority"
+  | "startDate"
+  | "targetDate"
+  | "leadAssigned"
+  | "memberAssigned";
+
 export const CORE_FIELDS: readonly CoreField[] = [
   "title",
   "description",
@@ -110,4 +197,24 @@ export const CORE_FIELDS: readonly CoreField[] = [
   "dueDate",
   "estimate",
   "priority",
+];
+
+export const PROJECT_FIELDS: readonly ProjectField[] = [
+  "name",
+  "description",
+  "statusName",
+  "priority",
+  "startDate",
+  "targetDate",
+  "leadAssigned",
+  "memberAssigned",
+];
+
+export type MilestoneField = "name" | "description" | "targetDate" | "sortOrder";
+
+export const MILESTONE_FIELDS: readonly MilestoneField[] = [
+  "name",
+  "description",
+  "targetDate",
+  "sortOrder",
 ];

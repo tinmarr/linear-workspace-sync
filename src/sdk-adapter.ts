@@ -4,6 +4,8 @@ import {
   type AppConfig,
   type IssueRelationChange,
   type IssueRelationSnapshot,
+  type MilestoneSnapshot,
+  type ProjectStatus,
   type WorkspaceConfig,
 } from "./domain.js";
 import type {
@@ -13,7 +15,14 @@ import type {
   IssueQuery,
   IssueUpdate,
   LinearIssue,
+  LinearMilestone,
+  LinearProject,
   LinearWorkspace,
+  ProjectCreateInput,
+  ProjectQuery,
+  ProjectUpdate,
+  MilestoneCreateInput,
+  MilestoneUpdate,
 } from "./linear.js";
 import { logEvent } from "./log.js";
 
@@ -25,6 +34,12 @@ type Connection<T> = {
 
 type SdkIssue = Awaited<ReturnType<LinearClient["issue"]>>;
 type SdkIssueRelation = Awaited<ReturnType<SdkIssue["relations"]>>["nodes"][number];
+type SdkProject = Awaited<ReturnType<LinearClient["project"]>>;
+type SdkProjectStatus = Awaited<ReturnType<LinearClient["projectStatus"]>>;
+type SdkProjectMember = Awaited<ReturnType<SdkProject["members"]>>["nodes"][number];
+type SdkProjectLink = Awaited<ReturnType<SdkProject["externalLinks"]>>["nodes"][number];
+type SdkProjectLabel = Awaited<ReturnType<LinearClient["projectLabels"]>>["nodes"][number];
+type SdkProjectMilestone = Awaited<ReturnType<SdkProject["projectMilestones"]>>["nodes"][number];
 type SdkTeam = Awaited<ReturnType<LinearClient["team"]>>;
 type SdkLabel = Awaited<ReturnType<LinearClient["issueLabels"]>>["nodes"][number];
 type SdkAttachment = Awaited<ReturnType<LinearClient["attachments"]>>["nodes"][number];
@@ -65,6 +80,18 @@ function issueIdentifierFromUrl(value: string): string | undefined {
   }
 }
 
+function projectIdentifierFromUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const index = parts.findIndex((part) => part === "project");
+    const identifier = index >= 0 ? parts[index + 1] : undefined;
+    return identifier ? decodeURIComponent(identifier) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function slugFromUrl(value: string): string | undefined {
   try {
     const parts = new URL(value).pathname.split("/").filter(Boolean);
@@ -94,6 +121,11 @@ export class SdkLinearWorkspace implements LinearWorkspace {
   private readonly userEmailsById = new Map<string, string | null>();
   private readonly userEmailPromises = new Map<string, Promise<string | null>>();
   private readonly issueCache = new Map<string, LinearIssue>();
+  private readonly projectCache = new Map<string, LinearProject>();
+  private readonly projectStatusIds = new Map<string, string>();
+  private projectStatusCatalog?: Promise<Array<ProjectStatus & { id: string }>>;
+  private readonly projectLabelIds = new Map<string, string>();
+  private projectLabelCatalog?: Promise<SdkProjectLabel[]>;
   private labelCatalog?: Promise<SdkLabel[]>;
   private labelNamesById?: Map<string, string>;
   private attachmentCatalog?: Promise<SdkAttachment[]>;
@@ -194,6 +226,57 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     }
   }
 
+  public async listProjects(query: ProjectQuery): Promise<LinearProject[]> {
+    logEvent("linear_project_query_starting", {
+      workspace: this.config.name,
+      key: this.key,
+      team: query.teamName,
+    });
+    const filter: LinearDocument.ProjectFilter = query.teamName
+      ? { accessibleTeams: { some: { name: { eq: query.teamName } } } }
+      : {};
+    const projects = await all(this.client.projects({
+      filter,
+      includeArchived: query.includeArchived ?? false,
+      first: 100,
+    }));
+    const result = await Promise.all(
+      projects
+        .filter((project) => query.includeArchived || (!project.archivedAt && !project.trashed))
+        .map((project) => this.toLinearProject(project, {
+          includeLabels: query.includeLabels ?? true,
+          includeExternalLinks: query.includeExternalLinks ?? true,
+        })),
+    );
+    for (const project of result) this.cacheProject(project);
+    logEvent("linear_projects_discovered", { workspace: this.config.name, count: result.length });
+    return result;
+  }
+
+  public async getProject(projectId: string, includeArchived = false): Promise<LinearProject | null> {
+    logEvent("linear_project_fetching", {
+      workspace: this.config.name,
+      projectId,
+      includeArchived,
+    });
+    const cached = this.projectCache.get(projectId);
+    if (cached && (includeArchived || !cached.archived)) return cached;
+    try {
+      const project = await this.client.project(projectId);
+      if (!includeArchived && (project.archivedAt || project.trashed)) return null;
+      const result = await this.toLinearProject(project);
+      this.cacheProject(result);
+      return result;
+    } catch (error: unknown) {
+      if (this.isNotFound(error)) return null;
+      throw error;
+    }
+  }
+
+  public async listProjectStatuses(): Promise<ProjectStatus[]> {
+    return (await this.loadProjectStatusCatalog()).map(({ name, type }) => ({ name, type }));
+  }
+
   public async listStatusNames(teamName: string): Promise<Set<string>> {
     const states = await this.loadStateNames(teamName);
     return new Set(states.values());
@@ -213,6 +296,8 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       priority: input.priority,
       stateId,
       assigneeId,
+      projectId: input.projectId ?? undefined,
+      projectMilestoneId: input.projectMilestoneId ?? undefined,
     });
     const issue = await payload.issue;
     if (!issue) throw new Error("Linear returned no issue after createIssue");
@@ -239,6 +324,12 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     if (update.parentIssueId !== undefined) {
       input.parentId = update.parentIssueId;
     }
+    if (update.projectId !== undefined) {
+      input.projectId = update.projectId;
+    }
+    if (update.projectMilestoneId !== undefined) {
+      input.projectMilestoneId = update.projectMilestoneId;
+    }
     const payload = await this.client.updateIssue(issueId, input);
     const issue = await payload.issue;
     if (!issue) throw new Error(`Linear returned no issue after updateIssue(${issueId})`);
@@ -246,6 +337,151 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     const result = await this.toLinearIssue(issue);
     this.cacheIssue(result);
     return result;
+  }
+
+  public async createProject(input: ProjectCreateInput, teamName: string): Promise<LinearProject> {
+    logEvent("linear_project_creation_starting", { workspace: this.config.name, team: teamName });
+    const team = await this.resolveTeam(teamName);
+    const statusId = input.statusName ? await this.resolveProjectStatusId(input.statusName) : undefined;
+    const payload = await this.client.createProject({
+      teamIds: [team.id],
+      name: input.name,
+      description: input.description ?? undefined,
+      priority: input.priority,
+      startDate: input.startDate ?? undefined,
+      targetDate: input.targetDate ?? undefined,
+      statusId,
+      leadId: input.leadAssigned ? this.viewerId : undefined,
+      memberIds: input.memberAssigned ? [this.viewerId] : [],
+    });
+    const project = await payload.project;
+    if (!project) throw new Error("Linear returned no project after createProject");
+    const result = await this.toLinearProject(project);
+    this.cacheProject(result);
+    logEvent("linear_project_created", { workspace: this.config.name, projectId: result.id });
+    return result;
+  }
+
+  public async updateProject(projectId: string, update: ProjectUpdate): Promise<LinearProject> {
+    logEvent("linear_project_update_starting", {
+      workspace: this.config.name,
+      projectId,
+      fields: Object.keys(update),
+    });
+    const input: LinearDocument.ProjectUpdateInput = {};
+    if (update.name !== undefined) input.name = update.name;
+    if (update.description !== undefined) input.description = update.description;
+    if (update.priority !== undefined) input.priority = update.priority;
+    if (update.startDate !== undefined) input.startDate = update.startDate;
+    if (update.targetDate !== undefined) input.targetDate = update.targetDate;
+    if (update.statusName !== undefined) {
+      input.statusId = await this.resolveProjectStatusId(update.statusName);
+    }
+    if (update.leadAssigned !== undefined) {
+      input.leadId = update.leadAssigned ? this.viewerId : null;
+    }
+    if (update.memberAssigned !== undefined) {
+      const project = await this.client.project(projectId);
+      const members = await all(project.members({ includeArchived: false, first: 100 }));
+      const memberIds = members.map((member) => member.id).filter((id) => id !== this.viewerId);
+      if (update.memberAssigned) memberIds.push(this.viewerId);
+      input.memberIds = memberIds;
+    }
+    const payload = await this.client.updateProject(projectId, input);
+    const project = await payload.project;
+    if (!project) throw new Error(`Linear returned no project after updateProject(${projectId})`);
+    const result = await this.toLinearProject(project);
+    this.cacheProject(result);
+    logEvent("linear_project_updated", { workspace: this.config.name, projectId, fields: Object.keys(update) });
+    return result;
+  }
+
+  public async listProjectMilestones(projectId: string, includeArchived = false): Promise<LinearMilestone[]> {
+    logEvent("linear_project_milestones_fetching", {
+      workspace: this.config.name,
+      projectId,
+      includeArchived,
+    });
+    const project = await this.client.project(projectId);
+    const milestones = await all(project.projectMilestones({ includeArchived, first: 100 }));
+    const result = milestones
+      .filter((milestone) => includeArchived || !milestone.archivedAt)
+      .map((milestone) => this.toLinearMilestone(milestone, projectId));
+    logEvent("linear_project_milestones_fetched", {
+      workspace: this.config.name,
+      projectId,
+      count: result.length,
+    });
+    return result;
+  }
+
+  public async getProjectMilestone(milestoneId: string, includeArchived = false): Promise<LinearMilestone | null> {
+    logEvent("linear_project_milestone_fetching", {
+      workspace: this.config.name,
+      milestoneId,
+      includeArchived,
+    });
+    try {
+      const milestone = await this.client.projectMilestone(milestoneId);
+      if (!includeArchived && milestone.archivedAt) return null;
+      const result = this.toLinearMilestone(milestone);
+      logEvent("linear_project_milestone_fetched", { workspace: this.config.name, milestoneId });
+      return result;
+    } catch (error: unknown) {
+      if (this.isNotFound(error)) return null;
+      throw error;
+    }
+  }
+
+  public async createProjectMilestone(input: MilestoneCreateInput): Promise<LinearMilestone> {
+    logEvent("linear_project_milestone_creation_starting", {
+      workspace: this.config.name,
+      projectId: input.projectId,
+      name: input.name,
+    });
+    const payload = await this.client.createProjectMilestone({
+      projectId: input.projectId,
+      name: input.name,
+      description: input.description ?? undefined,
+      targetDate: input.targetDate ?? undefined,
+      sortOrder: input.sortOrder,
+    });
+    const milestone = await payload.projectMilestone;
+    if (!milestone) throw new Error("Linear returned no milestone after createProjectMilestone");
+    const result = this.toLinearMilestone(milestone, input.projectId);
+    logEvent("linear_project_milestone_created", { workspace: this.config.name, milestoneId: result.id });
+    return result;
+  }
+
+  public async updateProjectMilestone(milestoneId: string, update: MilestoneUpdate): Promise<LinearMilestone> {
+    logEvent("linear_project_milestone_update_starting", {
+      workspace: this.config.name,
+      milestoneId,
+      fields: Object.keys(update),
+    });
+    const input: LinearDocument.ProjectMilestoneUpdateInput = {};
+    if (update.projectId !== undefined) input.projectId = update.projectId;
+    if (update.name !== undefined) input.name = update.name;
+    if (update.description !== undefined) input.description = update.description;
+    if (update.targetDate !== undefined) input.targetDate = update.targetDate;
+    if (update.sortOrder !== undefined) input.sortOrder = update.sortOrder;
+    const payload = await this.client.updateProjectMilestone(milestoneId, input);
+    const milestone = await payload.projectMilestone;
+    if (!milestone) throw new Error(`Linear returned no milestone after updateProjectMilestone(${milestoneId})`);
+    const result = this.toLinearMilestone(milestone, update.projectId);
+    logEvent("linear_project_milestone_updated", {
+      workspace: this.config.name,
+      milestoneId,
+      fields: Object.keys(update),
+    });
+    return result;
+  }
+
+  public async deleteProjectMilestone(milestoneId: string): Promise<void> {
+    logEvent("linear_project_milestone_deletion_starting", { workspace: this.config.name, milestoneId });
+    const payload = await this.client.deleteProjectMilestone(milestoneId);
+    if (!payload.success) throw new Error(`Linear failed to delete project milestone ${milestoneId}`);
+    logEvent("linear_project_milestone_deleted", { workspace: this.config.name, milestoneId });
   }
 
   public async createIssueRelation(input: IssueRelationCreateInput): Promise<IssueRelationSnapshot> {
@@ -331,6 +567,80 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     logEvent("linear_personal_notification_added", { workspace: this.config.name, issueId });
   }
 
+  public async ensureProjectLabel(text: string): Promise<void> {
+    logEvent("linear_project_label_ensuring", { workspace: this.config.name, label: text });
+    try {
+      await this.resolveProjectLabelId(text);
+    } catch (error: unknown) {
+      if (!(error instanceof Error) || !error.message.includes("found 0")) throw error;
+      const payload = await this.client.createProjectLabel({ name: text, color: "#6B7280" });
+      const label = await payload.projectLabel;
+      if (!label) throw new Error(`Linear returned no project label after creating ${text}`);
+      this.projectLabelIds.set(text, label.id);
+    }
+  }
+
+  public async addProjectLabel(projectId: string, text: string): Promise<void> {
+    await this.client.projectAddLabel(projectId, await this.resolveProjectLabelId(text));
+  }
+
+  public async removeProjectLabel(projectId: string, text: string): Promise<void> {
+    await this.client.projectRemoveLabel(projectId, await this.resolveProjectLabelId(text));
+  }
+
+  public async addPersonalProjectLink(projectId: string, targetUrl: string, title: string): Promise<void> {
+    logEvent("linear_personal_project_link_adding", { workspace: this.config.name, projectId, title });
+    await this.client.createEntityExternalLink({ projectId, url: targetUrl, label: title });
+  }
+
+  public async addPersonalProjectNotification(projectId: string, message: string): Promise<void> {
+    logEvent("linear_personal_project_notification_adding", { workspace: this.config.name, projectId });
+    await this.notificationClient.createComment({
+      projectId,
+      body: `${this.viewerUrl} ${message}`,
+    });
+  }
+
+  private async toLinearProject(
+    project: SdkProject,
+    options: { includeLabels?: boolean; includeExternalLinks?: boolean } = {},
+  ): Promise<LinearProject> {
+    const includeLabels = options.includeLabels ?? true;
+    const includeExternalLinks = options.includeExternalLinks ?? true;
+    const [status, members, labels, externalLinks] = await Promise.all([
+      project.status,
+      all(project.members({ includeArchived: false, first: 100 })),
+      includeLabels ? all(project.labels({ includeArchived: false, first: 100 })) : Promise.resolve([]),
+      includeExternalLinks ? all(project.externalLinks({ includeArchived: false, first: 100 })) : Promise.resolve([]),
+    ]);
+    const result: LinearProject = {
+      id: project.id,
+      url: project.url,
+      workspaceKey: this.key,
+      name: project.name,
+      description: project.description ?? null,
+      statusName: status?.name ?? "",
+      statusType: status?.type ?? "",
+      priority: project.priority,
+      startDate: normalizedDate(project.startDate),
+      targetDate: normalizedDate(project.targetDate),
+      leadAssigned: project.leadId === this.viewerId,
+      memberAssigned: members.some((member: SdkProjectMember) => member.id === this.viewerId),
+      archived: Boolean(project.archivedAt || project.trashed),
+      labelNames: labels.map((label: SdkProjectLabel) => label.name),
+      updatedAt: this.timestamp(project.updatedAt),
+      externalLinks: externalLinks.flatMap((link: SdkProjectLink) => {
+        const projectId = projectIdentifierFromUrl(link.url);
+        const workspaceSlug = slugFromUrl(link.url);
+        const workspace = this.linkTargets.find((target) => target.workspaceSlug === workspaceSlug);
+        return projectId && workspace
+          ? [{ workspaceKey: workspace.key, projectId, projectUrl: link.url }]
+          : [];
+      }),
+    };
+    return result;
+  }
+
   private async toLinearIssue(
     issue: SdkIssue,
     options: { includeLabels?: boolean; includeExternalLinks?: boolean; includeRelationships?: boolean } = {},
@@ -361,6 +671,8 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       assigneeEmail,
       archived: Boolean(issue.archivedAt || issue.trashed),
       labelNames,
+      projectId: issue.projectId ?? null,
+      projectMilestoneId: issue.projectMilestoneId ?? null,
       externalLinks,
       updatedAt: this.timestamp(issue.updatedAt),
       parentIssueId: issue.parentId ?? null,
@@ -375,6 +687,25 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       attachments: externalLinks.length,
     });
     return result;
+  }
+
+  private toLinearMilestone(
+    milestone: SdkProjectMilestone,
+    projectId?: string,
+  ): LinearMilestone {
+    const resolvedProjectId = milestone.projectId ?? projectId;
+    if (!resolvedProjectId) throw new Error(`Linear returned no project for milestone ${milestone.id}`);
+    return {
+      id: milestone.id,
+      projectId: resolvedProjectId,
+      workspaceKey: this.key,
+      name: milestone.name,
+      description: milestone.description ?? null,
+      targetDate: normalizedDate(milestone.targetDate),
+      sortOrder: milestone.sortOrder,
+      archived: Boolean(milestone.archivedAt),
+      updatedAt: this.timestamp(milestone.updatedAt),
+    } satisfies MilestoneSnapshot;
   }
 
   private extractExternalLinks(urls: string[]): ExternalIssueLink[] {
@@ -424,6 +755,35 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     return state.id;
   }
 
+  private async resolveProjectStatusId(statusName: string): Promise<string> {
+    const cached = this.projectStatusIds.get(statusName);
+    if (cached) return cached;
+    const statuses = await this.loadProjectStatusCatalog();
+    const status = exactOne(
+      statuses.filter((candidate) => candidate.name === statusName),
+      `project status named ${statusName}`,
+    );
+    this.projectStatusIds.set(statusName, status.id);
+    return status.id;
+  }
+
+  private async loadProjectStatusCatalog(): Promise<Array<ProjectStatus & { id: string }>> {
+    if (this.projectStatusCatalog) return this.projectStatusCatalog;
+    const promise = (async () => {
+      const statuses = await all(this.client.projectStatuses({ includeArchived: false, first: 100 }));
+      return statuses
+        .filter((status) => !status.archivedAt)
+        .map((status) => ({ id: status.id, name: status.name, type: status.type }));
+    })();
+    this.projectStatusCatalog = promise;
+    try {
+      return await promise;
+    } catch (error) {
+      if (this.projectStatusCatalog === promise) this.projectStatusCatalog = undefined;
+      throw error;
+    }
+  }
+
   private async resolveLabelId(text: string): Promise<string> {
     const cached = this.labelIds.get(text);
     if (cached) return cached;
@@ -445,6 +805,18 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     const label = exactOne(labels.filter((candidate) => !candidate.archivedAt && candidate.name === text), `label named ${text}`);
     this.labelIds.set(text, label.id);
     logEvent("linear_label_resolved", { workspace: this.config.name, label: text });
+    return label.id;
+  }
+
+  private async resolveProjectLabelId(text: string): Promise<string> {
+    const cached = this.projectLabelIds.get(text);
+    if (cached) return cached;
+    const labels = await this.loadProjectLabelCatalog();
+    const label = exactOne(
+      labels.filter((candidate) => !candidate.archivedAt && candidate.name === text),
+      `project label named ${text}`,
+    );
+    this.projectLabelIds.set(text, label.id);
     return label.id;
   }
 
@@ -545,6 +917,18 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     }
   }
 
+  private async loadProjectLabelCatalog(): Promise<SdkProjectLabel[]> {
+    if (this.projectLabelCatalog) return this.projectLabelCatalog;
+    const promise = all(this.client.projectLabels({ includeArchived: false, first: 100 }));
+    this.projectLabelCatalog = promise;
+    try {
+      return await promise;
+    } catch (error) {
+      if (this.projectLabelCatalog === promise) this.projectLabelCatalog = undefined;
+      throw error;
+    }
+  }
+
   private async externalLinksForIssue(issueId: string): Promise<ExternalIssueLink[]> {
     const attachments = await this.loadAttachmentCatalog();
     return attachments
@@ -639,6 +1023,11 @@ export class SdkLinearWorkspace implements LinearWorkspace {
   private cacheIssue(issue: LinearIssue): void {
     this.issueCache.set(issue.id, issue);
     this.issueCache.set(issue.identifier, issue);
+  }
+
+  private cacheProject(project: LinearProject): void {
+    this.projectCache.set(project.id, project);
+    this.projectCache.set(project.url, project);
   }
 
   private isNotFound(error: unknown): boolean {
