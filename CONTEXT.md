@@ -202,6 +202,22 @@ _Avoid_: project metadata, project mirror field
 The relationship that places a mapped issue in a mapped project and is synchronized only when both the issue and project mappings exist. Its additions, removals, and latest-edit behavior follow the managed relationship rules used for subissues and native issue relationships.
 _Avoid_: project assignment, issue grouping
 
+**Project milestone**:
+A named phase or checkpoint belonging to a project, with its own description, target date, and order, used to organize mapped issues toward a goal.
+_Avoid_: project phase, project checkpoint
+
+**Milestone mapping**:
+The managed relationship between a milestone on a personal project and the corresponding milestone on an external project in one mapped workspace. The relationship is identified by persisted sync state and may be recovered by exact name within the corresponding mapped projects.
+_Avoid_: milestone mirror, milestone pairing
+
+**Milestone issue membership**:
+The relationship that places a mapped issue in a mapped project milestone and is synchronized only when the issue, project, and milestone mappings all exist. Its additions, removals, and latest-edit behavior follow the managed relationship rules used for other issue relationships.
+_Avoid_: milestone assignment, issue milestone grouping
+
+**Milestone synchronization**:
+The bidirectional synchronization of mapped milestone names, descriptions, target dates, order, and mapped issue membership between corresponding projects. Missing counterparts are created, and deleting or archiving one milestone removes its mapped counterpart.
+_Avoid_: milestone mirroring
+
 **Project assignment**:
 The authenticated user's role on a project, including project lead or project member, which is synchronized between mapped projects.
 _Avoid_: project ownership, project responsibility

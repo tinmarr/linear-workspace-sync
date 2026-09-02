@@ -4,6 +4,9 @@ import Database from "better-sqlite3";
 import type {
   IssueSnapshot,
   MappingRecord,
+  MilestoneMappingRecord,
+  MilestoneSnapshot,
+  MilestoneSnapshotPair,
   ParentSyncState,
   ProjectMappingRecord,
   ProjectMembershipSyncState,
@@ -39,6 +42,8 @@ type ProjectMembershipRow = {
   personal_issue_id: string;
   personal_project_id: string | null;
   external_project_id: string | null;
+  personal_milestone_id: string | null;
+  external_milestone_id: string | null;
   personal_updated_at: string | null;
   external_updated_at: string | null;
   personal_managed: number;
@@ -67,6 +72,17 @@ type ParentRow = {
   external_updated_at: string | null;
   personal_managed: number;
   external_managed: number;
+};
+
+type MilestoneMappingRow = {
+  personal_project_id: string;
+  external_workspace_key: string;
+  external_project_id: string;
+  personal_milestone_id: string;
+  external_milestone_id: string;
+  active: number;
+  conflict: number;
+  broken: number;
 };
 
 export class SyncState {
@@ -277,6 +293,23 @@ export class SyncState {
             WHERE external_workspace_key = ? AND personal_project_id = ?`,
         )
         .run(mapping.externalWorkspaceKey, previousPersonalProjectId);
+      this.db
+        .prepare(
+          `DELETE FROM milestone_snapshots
+            WHERE external_workspace_key = ?
+              AND personal_milestone_id IN (
+                SELECT personal_milestone_id
+                  FROM milestone_mappings
+                 WHERE external_workspace_key = ? AND personal_project_id = ?
+              )`,
+        )
+        .run(mapping.externalWorkspaceKey, mapping.externalWorkspaceKey, previousPersonalProjectId);
+      this.db
+        .prepare(
+          `DELETE FROM milestone_mappings
+            WHERE external_workspace_key = ? AND personal_project_id = ?`,
+        )
+        .run(mapping.externalWorkspaceKey, previousPersonalProjectId);
       this.upsertProjectMapping(mapping);
     });
     transaction();
@@ -314,6 +347,7 @@ export class SyncState {
       .prepare(
         `SELECT external_workspace_key, personal_issue_id,
                 personal_project_id, external_project_id,
+                personal_milestone_id, external_milestone_id,
                 personal_updated_at, external_updated_at,
                 personal_managed, external_managed
            FROM project_membership_snapshots
@@ -328,6 +362,7 @@ export class SyncState {
       .prepare(
         `SELECT external_workspace_key, personal_issue_id,
                 personal_project_id, external_project_id,
+                personal_milestone_id, external_milestone_id,
                 personal_updated_at, external_updated_at,
                 personal_managed, external_managed
            FROM project_membership_snapshots
@@ -343,13 +378,17 @@ export class SyncState {
         `INSERT INTO project_membership_snapshots(
           external_workspace_key, personal_issue_id,
           personal_project_id, external_project_id,
+          personal_milestone_id, external_milestone_id,
           personal_updated_at, external_updated_at, personal_managed, external_managed
         ) VALUES (@externalWorkspaceKey, @personalIssueId,
           @personalProjectId, @externalProjectId,
+          @personalMilestoneId, @externalMilestoneId,
           @personalUpdatedAt, @externalUpdatedAt, @personalManaged, @externalManaged)
         ON CONFLICT(external_workspace_key, personal_issue_id) DO UPDATE SET
           personal_project_id = excluded.personal_project_id,
           external_project_id = excluded.external_project_id,
+          personal_milestone_id = excluded.personal_milestone_id,
+          external_milestone_id = excluded.external_milestone_id,
           personal_updated_at = excluded.personal_updated_at,
           external_updated_at = excluded.external_updated_at,
           personal_managed = excluded.personal_managed,
@@ -360,6 +399,135 @@ export class SyncState {
         personalManaged: state.personalManaged ? 1 : 0,
         externalManaged: state.externalManaged ? 1 : 0,
       });
+  }
+
+  public getMilestoneMapping(
+    personalMilestoneId: string,
+    externalWorkspaceKey: WorkspaceKey,
+  ): MilestoneMappingRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT personal_project_id, external_workspace_key, external_project_id,
+                personal_milestone_id, external_milestone_id, active, conflict, broken
+           FROM milestone_mappings
+          WHERE personal_milestone_id = ? AND external_workspace_key = ?`,
+      )
+      .get(personalMilestoneId, externalWorkspaceKey) as MilestoneMappingRow | undefined;
+    return row ? this.milestoneMappingFromRow(row) : undefined;
+  }
+
+  public findMilestoneMappingByExternal(
+    externalWorkspaceKey: WorkspaceKey,
+    externalMilestoneId: string,
+  ): MilestoneMappingRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT personal_project_id, external_workspace_key, external_project_id,
+                personal_milestone_id, external_milestone_id, active, conflict, broken
+           FROM milestone_mappings
+          WHERE external_workspace_key = ? AND external_milestone_id = ?`,
+      )
+      .get(externalWorkspaceKey, externalMilestoneId) as MilestoneMappingRow | undefined;
+    return row ? this.milestoneMappingFromRow(row) : undefined;
+  }
+
+  public listMilestoneMappings(externalWorkspaceKey?: WorkspaceKey): MilestoneMappingRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT personal_project_id, external_workspace_key, external_project_id,
+                personal_milestone_id, external_milestone_id, active, conflict, broken
+           FROM milestone_mappings
+          WHERE (? IS NULL OR external_workspace_key = ?)
+          ORDER BY external_workspace_key, personal_project_id, personal_milestone_id`,
+      )
+      .all(externalWorkspaceKey ?? null, externalWorkspaceKey ?? null) as MilestoneMappingRow[];
+    return rows.map((row) => this.milestoneMappingFromRow(row));
+  }
+
+  public upsertMilestoneMapping(mapping: MilestoneMappingRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO milestone_mappings(
+          personal_project_id, external_workspace_key, external_project_id,
+          personal_milestone_id, external_milestone_id, active, conflict, broken
+        ) VALUES (@personalProjectId, @externalWorkspaceKey, @externalProjectId,
+          @personalMilestoneId, @externalMilestoneId, @active, @conflict, @broken)
+        ON CONFLICT(personal_milestone_id, external_workspace_key) DO UPDATE SET
+          personal_project_id = excluded.personal_project_id,
+          external_project_id = excluded.external_project_id,
+          external_milestone_id = excluded.external_milestone_id,
+          active = excluded.active,
+          conflict = excluded.conflict,
+          broken = excluded.broken`,
+      )
+      .run({
+        ...mapping,
+        active: mapping.active ? 1 : 0,
+        conflict: mapping.conflict ? 1 : 0,
+        broken: mapping.broken ? 1 : 0,
+      });
+  }
+
+  public deleteMilestoneMapping(personalMilestoneId: string, externalWorkspaceKey: WorkspaceKey): void {
+    const transaction = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `DELETE FROM milestone_mappings
+            WHERE personal_milestone_id = ? AND external_workspace_key = ?`,
+        )
+        .run(personalMilestoneId, externalWorkspaceKey);
+      this.db
+        .prepare(
+          `DELETE FROM milestone_snapshots
+            WHERE personal_milestone_id = ? AND external_workspace_key = ?`,
+        )
+        .run(personalMilestoneId, externalWorkspaceKey);
+    });
+    transaction();
+  }
+
+  public getMilestoneSnapshot(
+    personalMilestoneId: string,
+    externalWorkspaceKey: WorkspaceKey,
+  ): MilestoneSnapshotPair | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT personal_value_json, external_value_json
+           FROM milestone_snapshots
+          WHERE personal_milestone_id = ? AND external_workspace_key = ?`,
+      )
+      .get(personalMilestoneId, externalWorkspaceKey) as {
+        personal_value_json?: string;
+        external_value_json?: string;
+      } | undefined;
+    if (!row?.personal_value_json || !row.external_value_json) return undefined;
+    return {
+      personal: JSON.parse(row.personal_value_json) as MilestoneSnapshot,
+      external: JSON.parse(row.external_value_json) as MilestoneSnapshot,
+    };
+  }
+
+  public putMilestoneSnapshot(
+    personalMilestoneId: string,
+    externalWorkspaceKey: WorkspaceKey,
+    snapshot: MilestoneSnapshotPair,
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO milestone_snapshots(
+          personal_milestone_id, external_workspace_key,
+          personal_value_json, external_value_json
+        ) VALUES (?, ?, ?, ?)
+        ON CONFLICT(personal_milestone_id, external_workspace_key) DO UPDATE SET
+          personal_value_json = excluded.personal_value_json,
+          external_value_json = excluded.external_value_json`,
+      )
+      .run(
+        personalMilestoneId,
+        externalWorkspaceKey,
+        JSON.stringify(snapshot.personal),
+        JSON.stringify(snapshot.external),
+      );
   }
 
   public replaceMapping(
@@ -755,11 +923,34 @@ export class SyncState {
         personal_issue_id TEXT NOT NULL,
         personal_project_id TEXT,
         external_project_id TEXT,
+        personal_milestone_id TEXT,
+        external_milestone_id TEXT,
         personal_updated_at TEXT,
         external_updated_at TEXT,
         personal_managed INTEGER NOT NULL,
         external_managed INTEGER NOT NULL,
         PRIMARY KEY (external_workspace_key, personal_issue_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS milestone_mappings (
+        personal_project_id TEXT NOT NULL,
+        external_workspace_key TEXT NOT NULL,
+        external_project_id TEXT NOT NULL,
+        personal_milestone_id TEXT NOT NULL,
+        external_milestone_id TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        conflict INTEGER NOT NULL DEFAULT 0,
+        broken INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (personal_milestone_id, external_workspace_key),
+        UNIQUE (external_workspace_key, external_milestone_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS milestone_snapshots (
+        personal_milestone_id TEXT NOT NULL,
+        external_workspace_key TEXT NOT NULL,
+        personal_value_json TEXT NOT NULL,
+        external_value_json TEXT NOT NULL,
+        PRIMARY KEY (personal_milestone_id, external_workspace_key)
       );
 
       CREATE TABLE IF NOT EXISTS notifications (
@@ -809,6 +1000,16 @@ export class SyncState {
       CREATE UNIQUE INDEX IF NOT EXISTS mappings_one_external_per_personal_issue
         ON mappings(personal_issue_id);
     `);
+    this.ensureColumn("project_membership_snapshots", "personal_milestone_id", "TEXT");
+    this.ensureColumn("project_membership_snapshots", "external_milestone_id", "TEXT");
+  }
+
+  private ensureColumn(table: string, column: string, definition: string): void {
+    const columns = this.db
+      .prepare(`PRAGMA table_info(${table})`)
+      .all() as Array<{ name?: string }>;
+    if (columns.some((item) => item.name === column)) return;
+    this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 
   private mappingFromRow(row: MappingRow): MappingRecord {
@@ -837,12 +1038,27 @@ export class SyncState {
     };
   }
 
+  private milestoneMappingFromRow(row: MilestoneMappingRow): MilestoneMappingRecord {
+    return {
+      personalProjectId: row.personal_project_id,
+      externalWorkspaceKey: row.external_workspace_key,
+      externalProjectId: row.external_project_id,
+      personalMilestoneId: row.personal_milestone_id,
+      externalMilestoneId: row.external_milestone_id,
+      active: row.active === 1,
+      conflict: row.conflict === 1,
+      broken: row.broken === 1,
+    };
+  }
+
   private projectMembershipFromRow(row: ProjectMembershipRow): ProjectMembershipSyncState {
     return {
       externalWorkspaceKey: row.external_workspace_key,
       personalIssueId: row.personal_issue_id,
       personalProjectId: row.personal_project_id,
       externalProjectId: row.external_project_id,
+      personalMilestoneId: row.personal_milestone_id,
+      externalMilestoneId: row.external_milestone_id,
       personalUpdatedAt: row.personal_updated_at,
       externalUpdatedAt: row.external_updated_at,
       personalManaged: row.personal_managed === 1,

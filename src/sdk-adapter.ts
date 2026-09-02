@@ -4,6 +4,7 @@ import {
   type AppConfig,
   type IssueRelationChange,
   type IssueRelationSnapshot,
+  type MilestoneSnapshot,
   type ProjectStatus,
   type WorkspaceConfig,
 } from "./domain.js";
@@ -14,11 +15,14 @@ import type {
   IssueQuery,
   IssueUpdate,
   LinearIssue,
+  LinearMilestone,
   LinearProject,
   LinearWorkspace,
   ProjectCreateInput,
   ProjectQuery,
   ProjectUpdate,
+  MilestoneCreateInput,
+  MilestoneUpdate,
 } from "./linear.js";
 import { logEvent } from "./log.js";
 
@@ -35,6 +39,7 @@ type SdkProjectStatus = Awaited<ReturnType<LinearClient["projectStatus"]>>;
 type SdkProjectMember = Awaited<ReturnType<SdkProject["members"]>>["nodes"][number];
 type SdkProjectLink = Awaited<ReturnType<SdkProject["externalLinks"]>>["nodes"][number];
 type SdkProjectLabel = Awaited<ReturnType<LinearClient["projectLabels"]>>["nodes"][number];
+type SdkProjectMilestone = Awaited<ReturnType<SdkProject["projectMilestones"]>>["nodes"][number];
 type SdkTeam = Awaited<ReturnType<LinearClient["team"]>>;
 type SdkLabel = Awaited<ReturnType<LinearClient["issueLabels"]>>["nodes"][number];
 type SdkAttachment = Awaited<ReturnType<LinearClient["attachments"]>>["nodes"][number];
@@ -292,6 +297,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       stateId,
       assigneeId,
       projectId: input.projectId ?? undefined,
+      projectMilestoneId: input.projectMilestoneId ?? undefined,
     });
     const issue = await payload.issue;
     if (!issue) throw new Error("Linear returned no issue after createIssue");
@@ -320,6 +326,9 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     }
     if (update.projectId !== undefined) {
       input.projectId = update.projectId;
+    }
+    if (update.projectMilestoneId !== undefined) {
+      input.projectMilestoneId = update.projectMilestoneId;
     }
     const payload = await this.client.updateIssue(issueId, input);
     const issue = await payload.issue;
@@ -385,6 +394,94 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     this.cacheProject(result);
     logEvent("linear_project_updated", { workspace: this.config.name, projectId, fields: Object.keys(update) });
     return result;
+  }
+
+  public async listProjectMilestones(projectId: string, includeArchived = false): Promise<LinearMilestone[]> {
+    logEvent("linear_project_milestones_fetching", {
+      workspace: this.config.name,
+      projectId,
+      includeArchived,
+    });
+    const project = await this.client.project(projectId);
+    const milestones = await all(project.projectMilestones({ includeArchived, first: 100 }));
+    const result = milestones
+      .filter((milestone) => includeArchived || !milestone.archivedAt)
+      .map((milestone) => this.toLinearMilestone(milestone, projectId));
+    logEvent("linear_project_milestones_fetched", {
+      workspace: this.config.name,
+      projectId,
+      count: result.length,
+    });
+    return result;
+  }
+
+  public async getProjectMilestone(milestoneId: string, includeArchived = false): Promise<LinearMilestone | null> {
+    logEvent("linear_project_milestone_fetching", {
+      workspace: this.config.name,
+      milestoneId,
+      includeArchived,
+    });
+    try {
+      const milestone = await this.client.projectMilestone(milestoneId);
+      if (!includeArchived && milestone.archivedAt) return null;
+      const result = this.toLinearMilestone(milestone);
+      logEvent("linear_project_milestone_fetched", { workspace: this.config.name, milestoneId });
+      return result;
+    } catch (error: unknown) {
+      if (this.isNotFound(error)) return null;
+      throw error;
+    }
+  }
+
+  public async createProjectMilestone(input: MilestoneCreateInput): Promise<LinearMilestone> {
+    logEvent("linear_project_milestone_creation_starting", {
+      workspace: this.config.name,
+      projectId: input.projectId,
+      name: input.name,
+    });
+    const payload = await this.client.createProjectMilestone({
+      projectId: input.projectId,
+      name: input.name,
+      description: input.description ?? undefined,
+      targetDate: input.targetDate ?? undefined,
+      sortOrder: input.sortOrder,
+    });
+    const milestone = await payload.projectMilestone;
+    if (!milestone) throw new Error("Linear returned no milestone after createProjectMilestone");
+    const result = this.toLinearMilestone(milestone, input.projectId);
+    logEvent("linear_project_milestone_created", { workspace: this.config.name, milestoneId: result.id });
+    return result;
+  }
+
+  public async updateProjectMilestone(milestoneId: string, update: MilestoneUpdate): Promise<LinearMilestone> {
+    logEvent("linear_project_milestone_update_starting", {
+      workspace: this.config.name,
+      milestoneId,
+      fields: Object.keys(update),
+    });
+    const input: LinearDocument.ProjectMilestoneUpdateInput = {};
+    if (update.projectId !== undefined) input.projectId = update.projectId;
+    if (update.name !== undefined) input.name = update.name;
+    if (update.description !== undefined) input.description = update.description;
+    if (update.targetDate !== undefined) input.targetDate = update.targetDate;
+    if (update.sortOrder !== undefined) input.sortOrder = update.sortOrder;
+    const payload = await this.client.updateProjectMilestone(milestoneId, input);
+    const milestone = await payload.projectMilestone;
+    if (!milestone) throw new Error(`Linear returned no milestone after updateProjectMilestone(${milestoneId})`);
+    const result = this.toLinearMilestone(milestone, update.projectId);
+    logEvent("linear_project_milestone_updated", {
+      workspace: this.config.name,
+      milestoneId,
+      fields: Object.keys(update),
+    });
+    return result;
+  }
+
+  public async deleteProjectMilestone(milestoneId: string): Promise<void> {
+    logEvent("linear_project_milestone_deletion_starting", { workspace: this.config.name, milestoneId });
+    const payload = await this.client.deleteProjectMilestone(milestoneId);
+    if (!payload.success) throw new Error(`Linear failed to delete project milestone ${milestoneId}`);
+    logEvent("linear_project_milestone_deleted", { workspace: this.config.name, milestoneId });
   }
 
   public async createIssueRelation(input: IssueRelationCreateInput): Promise<IssueRelationSnapshot> {
@@ -575,6 +672,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       archived: Boolean(issue.archivedAt || issue.trashed),
       labelNames,
       projectId: issue.projectId ?? null,
+      projectMilestoneId: issue.projectMilestoneId ?? null,
       externalLinks,
       updatedAt: this.timestamp(issue.updatedAt),
       parentIssueId: issue.parentId ?? null,
@@ -589,6 +687,25 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       attachments: externalLinks.length,
     });
     return result;
+  }
+
+  private toLinearMilestone(
+    milestone: SdkProjectMilestone,
+    projectId?: string,
+  ): LinearMilestone {
+    const resolvedProjectId = milestone.projectId ?? projectId;
+    if (!resolvedProjectId) throw new Error(`Linear returned no project for milestone ${milestone.id}`);
+    return {
+      id: milestone.id,
+      projectId: resolvedProjectId,
+      workspaceKey: this.key,
+      name: milestone.name,
+      description: milestone.description ?? null,
+      targetDate: normalizedDate(milestone.targetDate),
+      sortOrder: milestone.sortOrder,
+      archived: Boolean(milestone.archivedAt),
+      updatedAt: this.timestamp(milestone.updatedAt),
+    } satisfies MilestoneSnapshot;
   }
 
   private extractExternalLinks(urls: string[]): ExternalIssueLink[] {

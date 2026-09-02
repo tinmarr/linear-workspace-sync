@@ -12,10 +12,12 @@ import type {
   LinearIssue,
   LinearProject,
   LinearWorkspace,
+  IssueUpdate,
   ProjectCreateInput,
   ProjectUpdate,
 } from "./linear.js";
 import { logEvent } from "./log.js";
+import { MilestoneSynchronizer } from "./milestone-sync.js";
 import { SyncState } from "./state.js";
 
 export type ProjectSyncResult = {
@@ -38,12 +40,23 @@ export type ProjectWorkspacePair = {
 };
 
 export class ProjectSynchronizer {
+  private readonly milestoneSynchronizer: MilestoneSynchronizer;
+
   public constructor(
     private readonly config: AppConfig,
     private readonly personal: LinearWorkspace,
     private readonly externals: Map<WorkspaceKey, LinearWorkspace>,
     private readonly state: SyncState,
-  ) {}
+  ) {
+    this.milestoneSynchronizer = new MilestoneSynchronizer(
+      personal,
+      state,
+      {
+        markConflict: (project, workspaceKey, fields) => this.markProjectConflict(project, workspaceKey, fields),
+        markBroken: (project, workspaceKey, fingerprint, message) => this.markProjectBroken(project, workspaceKey, fingerprint, message),
+      },
+    );
+  }
 
   public async ensurePersonalLabels(): Promise<void> {
     for (const workspace of this.config.external) {
@@ -290,6 +303,9 @@ export class ProjectSynchronizer {
     await this.ensurePersonalProjectLinkAndLabel(personalProject, pair, externalProject);
     const mapping = this.state.getProjectMapping(personalProject.id, pair.externalConfig.key);
     if (!mapping) this.state.upsertProjectMapping(this.toMapping(personalProject, pair.externalConfig, externalProject));
+    const milestoneResult = await this.milestoneSynchronizer.syncProject(personalProject, externalProject, pair);
+    result.conflicts += milestoneResult.conflicts;
+    result.broken += milestoneResult.broken;
     const currentPersonal = this.toSnapshot(personalProject);
     const currentExternal = this.toSnapshot(externalProject);
     const previous = this.state.getProjectSnapshot(personalProject.id, pair.externalConfig.key);
@@ -351,9 +367,11 @@ export class ProjectSynchronizer {
     if (Object.keys(personalChanges).length > 0) Object.assign(personalProject, await this.personal.updateProject(personalProject.id, personalChanges));
     this.state.putProjectSnapshot(this.toSnapshot(personalProject), pair.externalConfig.key);
     this.state.putProjectSnapshot(this.toSnapshot(externalProject), pair.externalConfig.key);
-    this.state.clearProjectConflict(personalProject.id, pair.externalConfig.key);
-    await this.removeProjectLabelIfPresent(personalProject, this.config.syncLabels.conflict);
-    this.state.clearProjectNotifications(personalProject.id, pair.externalConfig.key, "conflict");
+    if (result.conflicts === 0) {
+      this.state.clearProjectConflict(personalProject.id, pair.externalConfig.key);
+      await this.removeProjectLabelIfPresent(personalProject, this.config.syncLabels.conflict);
+      this.state.clearProjectNotifications(personalProject.id, pair.externalConfig.key, "conflict");
+    }
     if (result.broken === 0) {
       await this.removeProjectLabelIfPresent(personalProject, this.config.syncLabels.broken);
       this.state.setProjectBroken(personalProject.id, pair.externalConfig.key, false);
@@ -378,6 +396,12 @@ export class ProjectSynchronizer {
       : undefined;
     if (personalIssue.projectId && !personalProjectMapping?.active) return;
     if (externalIssue.projectId && !externalProjectMapping?.active) return;
+    const personalMilestoneMapping = personalIssue.projectMilestoneId
+      ? this.state.getMilestoneMapping(personalIssue.projectMilestoneId, externalWorkspaceKey)
+      : undefined;
+    const externalMilestoneMapping = externalIssue.projectMilestoneId
+      ? this.state.findMilestoneMappingByExternal(externalWorkspaceKey, externalIssue.projectMilestoneId)
+      : undefined;
     if (personalIssue.projectId) {
       const personalProject = await this.personal.getProject(personalIssue.projectId, true);
       if (!personalProject || personalProject.archived) return;
@@ -388,6 +412,56 @@ export class ProjectSynchronizer {
     }
     const personalMappedExternalId = personalProjectMapping?.active ? personalProjectMapping.externalProjectId : undefined;
     const externalMappedPersonalId = externalProjectMapping?.active ? externalProjectMapping.personalProjectId : undefined;
+    const previousPersonalMilestoneMapping = previous?.personalMilestoneId
+      ? this.state.getMilestoneMapping(previous.personalMilestoneId, externalWorkspaceKey)
+      : undefined;
+    const previousExternalMilestoneMapping = previous?.externalMilestoneId
+      ? this.state.findMilestoneMappingByExternal(externalWorkspaceKey, previous.externalMilestoneId)
+      : undefined;
+    const previousPersonalProjectMapping = previous?.personalProjectId
+      ? this.state.getProjectMapping(previous.personalProjectId, externalWorkspaceKey)
+      : undefined;
+    const previousExternalProjectMapping = previous?.externalProjectId
+      ? this.state.findProjectMappingByExternal(externalWorkspaceKey, previous.externalProjectId)
+      : undefined;
+    const personalRemovalProjectMapping = personalIssue.projectId
+      ? personalProjectMapping
+      : previousPersonalProjectMapping;
+    const externalRemovalProjectMapping = externalIssue.projectId
+      ? externalProjectMapping
+      : previousExternalProjectMapping;
+    const personalMilestoneRemovalCanSync = personalIssue.projectMilestoneId === null
+      && previous?.personalMilestoneId !== null
+      && previous?.personalMilestoneId !== undefined
+      && (previous.personalProjectId === personalIssue.projectId || personalIssue.projectId === null)
+      && personalRemovalProjectMapping?.active === true
+      && previousPersonalMilestoneMapping?.active === true
+      && previousPersonalMilestoneMapping.personalProjectId === previous.personalProjectId
+      && previousPersonalMilestoneMapping.externalProjectId === personalRemovalProjectMapping.externalProjectId;
+    const externalMilestoneRemovalCanSync = externalIssue.projectMilestoneId === null
+      && previous?.externalMilestoneId !== null
+      && previous?.externalMilestoneId !== undefined
+      && (previous.externalProjectId === externalIssue.projectId || externalIssue.projectId === null)
+      && externalRemovalProjectMapping?.active === true
+      && previousExternalMilestoneMapping?.active === true
+      && previousExternalMilestoneMapping.externalProjectId === previous.externalProjectId
+      && previousExternalMilestoneMapping.personalProjectId === externalRemovalProjectMapping.personalProjectId;
+    const personalMilestoneCanSync = Boolean(personalMilestoneMapping?.active
+      && personalProjectMapping?.active
+      && personalIssue.projectId === personalMilestoneMapping.personalProjectId
+      && personalProjectMapping.externalProjectId === personalMilestoneMapping.externalProjectId)
+      || personalMilestoneRemovalCanSync;
+    const externalMilestoneCanSync = Boolean(externalMilestoneMapping?.active
+      && externalProjectMapping?.active
+      && externalIssue.projectId === externalMilestoneMapping.externalProjectId
+      && externalProjectMapping.personalProjectId === externalMilestoneMapping.personalProjectId)
+      || externalMilestoneRemovalCanSync;
+    const personalMappedExternalMilestoneId = personalMilestoneCanSync && personalMilestoneMapping?.active
+      ? personalMilestoneMapping.externalMilestoneId
+      : personalMilestoneRemovalCanSync ? null : undefined;
+    const externalMappedPersonalMilestoneId = externalMilestoneCanSync && externalMilestoneMapping?.active
+      ? externalMilestoneMapping.personalMilestoneId
+      : externalMilestoneRemovalCanSync ? null : undefined;
     if (personalMappedExternalId) {
       const mappedExternalProject = await external.getProject(personalMappedExternalId, true);
       if (!mappedExternalProject || mappedExternalProject.archived) return;
@@ -397,14 +471,45 @@ export class ProjectSynchronizer {
       if (!mappedPersonalProject || mappedPersonalProject.archived) return;
     }
     const personalChanged = previous
-      ? this.relationshipChanged(personalIssue.projectId, personalIssue.updatedAt, previous.personalProjectId, previous.personalUpdatedAt)
+      ? this.relationshipChanged(
+        personalIssue.projectId,
+        personalIssue.projectMilestoneId,
+        personalIssue.updatedAt,
+        previous.personalProjectId,
+        previous.personalMilestoneId,
+        previous.personalUpdatedAt,
+      )
       : false;
     const externalChanged = previous
-      ? this.relationshipChanged(externalIssue.projectId, externalIssue.updatedAt, previous.externalProjectId, previous.externalUpdatedAt)
+      ? this.relationshipChanged(
+        externalIssue.projectId,
+        externalIssue.projectMilestoneId,
+        externalIssue.updatedAt,
+        previous.externalProjectId,
+        previous.externalMilestoneId,
+        previous.externalUpdatedAt,
+      )
+      : false;
+    const personalProjectChanged = previous
+      ? personalIssue.projectId !== previous.personalProjectId
+      : false;
+    const externalProjectChanged = previous
+      ? externalIssue.projectId !== previous.externalProjectId
       : false;
 
-    const corresponding = personalMappedExternalId === (externalIssue.projectId ?? null)
-      || externalMappedPersonalId === (personalIssue.projectId ?? null);
+    const personalMilestoneCorresponds = personalMilestoneCanSync
+      ? personalMappedExternalMilestoneId === (externalIssue.projectMilestoneId ?? null)
+      : !personalIssue.projectMilestoneId && !externalIssue.projectMilestoneId;
+    const externalMilestoneCorresponds = externalMilestoneCanSync
+      ? externalMappedPersonalMilestoneId === (personalIssue.projectMilestoneId ?? null)
+      : !personalIssue.projectMilestoneId && !externalIssue.projectMilestoneId;
+    const corresponding = (
+      (personalMappedExternalId ?? null) === (externalIssue.projectId ?? null)
+      && personalMilestoneCorresponds
+    ) || (
+      (externalMappedPersonalId ?? null) === (personalIssue.projectId ?? null)
+      && externalMilestoneCorresponds
+    );
     let side: "personal" | "external" | undefined;
     if (personalChanged && externalChanged && !corresponding) {
       side = this.latestSide(personalIssue.updatedAt, externalIssue.updatedAt);
@@ -413,28 +518,40 @@ export class ProjectSynchronizer {
     } else if (externalChanged && !personalChanged) {
       side = "external";
     } else if (!previous) {
-      side = personalIssue.projectId ? "personal" : externalIssue.projectId ? "external" : undefined;
+      side = personalIssue.projectId || personalIssue.projectMilestoneId
+        ? "personal"
+        : externalIssue.projectId || externalIssue.projectMilestoneId
+          ? "external"
+          : undefined;
     }
 
     let personalManaged = previous?.personalManaged ?? false;
     let externalManaged = previous?.externalManaged ?? false;
-    if (personalChanged) personalManaged = false;
-    if (externalChanged) externalManaged = false;
-    if (side === "personal" && (personalMappedExternalId || externalManaged)) {
+    if (personalProjectChanged) personalManaged = false;
+    if (externalProjectChanged) externalManaged = false;
+    if (side === "personal" && (personalMappedExternalId || personalMappedExternalMilestoneId || externalManaged)) {
       const desiredExternalProjectId = personalMappedExternalId ?? null;
-      if (externalIssue.projectId !== desiredExternalProjectId) {
-        Object.assign(externalIssue, await this.externals.get(externalWorkspaceKey)!.updateIssue(externalIssue.id, {
-          projectId: desiredExternalProjectId,
-        }));
+      const externalUpdate: IssueUpdate = { projectId: desiredExternalProjectId };
+      if (personalMilestoneCanSync) externalUpdate.projectMilestoneId = personalMappedExternalMilestoneId ?? null;
+      if (
+        externalIssue.projectId !== desiredExternalProjectId
+        || (personalMilestoneCanSync
+          && externalIssue.projectMilestoneId !== (personalMappedExternalMilestoneId ?? null))
+      ) {
+        Object.assign(externalIssue, await this.externals.get(externalWorkspaceKey)!.updateIssue(externalIssue.id, externalUpdate));
       }
       externalManaged = desiredExternalProjectId !== null;
     }
-    if (side === "external" && (externalMappedPersonalId || personalManaged)) {
+    if (side === "external" && (externalMappedPersonalId || externalMappedPersonalMilestoneId || personalManaged)) {
       const desiredPersonalProjectId = externalMappedPersonalId ?? null;
-      if (personalIssue.projectId !== desiredPersonalProjectId) {
-        Object.assign(personalIssue, await this.personal.updateIssue(personalIssue.id, {
-          projectId: desiredPersonalProjectId,
-        }));
+      const personalUpdate: IssueUpdate = { projectId: desiredPersonalProjectId };
+      if (externalMilestoneCanSync) personalUpdate.projectMilestoneId = externalMappedPersonalMilestoneId ?? null;
+      if (
+        personalIssue.projectId !== desiredPersonalProjectId
+        || (externalMilestoneCanSync
+          && personalIssue.projectMilestoneId !== (externalMappedPersonalMilestoneId ?? null))
+      ) {
+        Object.assign(personalIssue, await this.personal.updateIssue(personalIssue.id, personalUpdate));
       }
       personalManaged = desiredPersonalProjectId !== null;
     }
@@ -444,6 +561,8 @@ export class ProjectSynchronizer {
       personalIssueId: personalIssue.id,
       personalProjectId: personalIssue.projectId,
       externalProjectId: externalIssue.projectId,
+      personalMilestoneId: personalIssue.projectMilestoneId,
+      externalMilestoneId: externalIssue.projectMilestoneId,
       personalUpdatedAt: personalIssue.updatedAt,
       externalUpdatedAt: externalIssue.updatedAt,
       personalManaged,
@@ -668,11 +787,13 @@ export class ProjectSynchronizer {
 
   private relationshipChanged(
     currentProjectId: string | null,
+    currentMilestoneId: string | null,
     currentUpdatedAt: string,
     previousProjectId: string | null,
+    previousMilestoneId: string | null,
     previousUpdatedAt: string | null,
   ): boolean {
-    if (currentProjectId !== previousProjectId) return true;
+    if (currentProjectId !== previousProjectId || currentMilestoneId !== previousMilestoneId) return true;
     return Boolean(currentUpdatedAt && previousUpdatedAt && currentUpdatedAt !== previousUpdatedAt);
   }
 

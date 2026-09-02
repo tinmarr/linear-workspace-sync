@@ -83,6 +83,7 @@ export type IssueSnapshot = {
   archived: boolean;
   labelNames: string[];
   projectId: string | null;
+  projectMilestoneId: string | null;
 };
 
 export type ProjectStatus = {
@@ -108,6 +109,34 @@ export type ProjectSnapshot = {
   updatedAt: string;
 };
 
+export type MilestoneSnapshot = {
+  id: string;
+  projectId: string;
+  workspaceKey: WorkspaceKey;
+  name: string;
+  description: string | null;
+  targetDate: string | null;
+  sortOrder: number;
+  archived: boolean;
+  updatedAt: string;
+};
+
+export type MilestoneMappingRecord = {
+  personalProjectId: string;
+  externalWorkspaceKey: WorkspaceKey;
+  externalProjectId: string;
+  personalMilestoneId: string;
+  externalMilestoneId: string;
+  active: boolean;
+  conflict: boolean;
+  broken: boolean;
+};
+
+export type MilestoneSnapshotPair = {
+  personal: MilestoneSnapshot;
+  external: MilestoneSnapshot;
+};
+
 export type ProjectMappingRecord = {
   personalProjectId: string;
   externalWorkspaceKey: WorkspaceKey;
@@ -124,6 +153,8 @@ export type ProjectMembershipSyncState = {
   personalIssueId: string;
   personalProjectId: string | null;
   externalProjectId: string | null;
+  personalMilestoneId: string | null;
+  externalMilestoneId: string | null;
   personalUpdatedAt: string | null;
   externalUpdatedAt: string | null;
   personalManaged: boolean;
@@ -177,4 +208,13 @@ export const PROJECT_FIELDS: readonly ProjectField[] = [
   "targetDate",
   "leadAssigned",
   "memberAssigned",
+];
+
+export type MilestoneField = "name" | "description" | "targetDate" | "sortOrder";
+
+export const MILESTONE_FIELDS: readonly MilestoneField[] = [
+  "name",
+  "description",
+  "targetDate",
+  "sortOrder",
 ];

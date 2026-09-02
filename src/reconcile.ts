@@ -422,12 +422,35 @@ export class ReconciliationEngine {
       pair.external,
     );
     const outboundInput = this.toCreateInput(personalIssue, target);
+    let outboundProjectMapping: ReturnType<SyncState["getProjectMapping"]>;
     if (personalIssue.projectId) {
-      const projectMapping = this.state.getProjectMapping(personalIssue.projectId, target.key);
-      if (projectMapping?.active) {
-        const externalProject = await pair.external.getProject(projectMapping.externalProjectId, true);
-        if (externalProject && !externalProject.archived) outboundInput.projectId = projectMapping.externalProjectId;
+      outboundProjectMapping = this.state.getProjectMapping(personalIssue.projectId, target.key);
+      if (outboundProjectMapping?.active) {
+        const externalProject = await pair.external.getProject(outboundProjectMapping.externalProjectId, true);
+        if (externalProject && !externalProject.archived) {
+          outboundInput.projectId = outboundProjectMapping.externalProjectId;
+        } else {
+          outboundInput.projectId = null;
+        }
+      } else {
+        outboundInput.projectId = null;
       }
+    } else {
+      outboundInput.projectId = null;
+    }
+    const outboundMilestoneMapping = personalIssue.projectMilestoneId
+      ? this.state.getMilestoneMapping(personalIssue.projectMilestoneId, target.key)
+      : undefined;
+    if (
+      outboundProjectMapping?.active
+      && outboundInput.projectId
+      && outboundMilestoneMapping?.active
+      && outboundMilestoneMapping.personalProjectId === personalIssue.projectId
+      && outboundMilestoneMapping.externalProjectId === outboundProjectMapping.externalProjectId
+    ) {
+      outboundInput.projectMilestoneId = outboundMilestoneMapping.externalMilestoneId;
+    } else {
+      outboundInput.projectMilestoneId = null;
     }
     outboundInput.statusName = outboundStatus.statusName;
     outboundInput.assigneeEmail = pair.external.viewerEmail;
@@ -654,11 +677,21 @@ export class ReconciliationEngine {
     const projectKey = externalIssue.projectId
       ? `${pair.externalConfig.key}\u0000${externalIssue.projectId}`
       : undefined;
-    const projectId = mappedProject
+    const projectId = projectMapping?.active && mappedProject
       && !mappedProject.archived
       && projectKey
       && !projectContext.ignoredExternalProjectKeys.has(projectKey)
       ? mappedProject.id
+      : undefined;
+    const milestoneMapping = externalIssue.projectMilestoneId
+      ? this.state.findMilestoneMappingByExternal(pair.externalConfig.key, externalIssue.projectMilestoneId)
+      : undefined;
+    const projectMilestoneId = projectId
+      && projectMapping?.active
+      && milestoneMapping?.active
+      && milestoneMapping.externalProjectId === externalIssue.projectId
+      && milestoneMapping.personalProjectId === projectId
+      ? milestoneMapping.personalMilestoneId
       : undefined;
     const issue = await this.personal.createIssue(
       {
@@ -666,6 +699,7 @@ export class ReconciliationEngine {
         statusName: targetStatuses.has(statusName) ? statusName : null,
         assigneeEmail: this.personal.viewerEmail,
         projectId,
+        projectMilestoneId,
       },
       this.config.personal.teamName,
     );
@@ -684,6 +718,7 @@ export class ReconciliationEngine {
       estimate: issue.estimate,
       priority: issue.priority,
       projectId: issue.projectId,
+      projectMilestoneId: issue.projectMilestoneId,
     };
   }
 
@@ -961,6 +996,7 @@ export class ReconciliationEngine {
       archived: issue.archived,
       labelNames: issue.labelNames,
       projectId: issue.projectId,
+      projectMilestoneId: issue.projectMilestoneId,
     };
   }
 

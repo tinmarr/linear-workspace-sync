@@ -2,7 +2,7 @@
 
 Periodic synchronization between a personal Linear workspace and one or more external workspaces. The supported deployment is a rootless Podman container managed by a systemd user service and timer.
 
-The sync includes explicitly routed projects as well as issues. A project uses the external workspace's `routing_label` as a project label, and an eligible synchronized issue can bring in its external project. Project links, core project fields, and the authenticated user's lead or member role are synchronized independently from issue mappings.
+The sync includes explicitly routed projects as well as issues. A project uses the external workspace's `routing_label` as a project label, and an eligible synchronized issue can bring in its external project. Project links, core project fields, milestones, and the authenticated user's lead or member role are synchronized independently from issue mappings. Mapped issue milestone membership is synchronized when the issue, project, and milestone are all mapped.
 
 ## Development
 

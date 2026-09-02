@@ -33,6 +33,17 @@ describe("reconciliation", () => {
       leadAssigned: true,
       memberAssigned: true,
     }));
+    personal.milestones.set("personal-milestone", {
+      id: "personal-milestone",
+      projectId: "personal-project",
+      workspaceKey: "personal",
+      name: "Launch",
+      description: "Launch milestone",
+      targetDate: "2026-02-01",
+      sortOrder: 1,
+      archived: false,
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    });
 
     const result = await engine.run(true);
 
@@ -48,6 +59,14 @@ describe("reconciliation", () => {
     })]);
     expect(personal.projects.get("personal-project")?.labelNames).toEqual(["sync:work", "frv:work"]);
     expect([...work.projects.values()][0].labelNames).toEqual([]);
+    expect([...work.milestones.values()]).toEqual([expect.objectContaining({
+      projectId: expect.any(String),
+      name: "Launch",
+      description: "Launch milestone",
+      targetDate: "2026-02-01",
+      sortOrder: 1,
+    })]);
+    expect(state.listMilestoneMappings("work")).toHaveLength(1);
     expect(personal.projectLinks).toHaveLength(1);
     expect(state.findProjectMappingByExternal("work", [...work.projects.keys()][0])?.personalProjectId)
       .toBe("personal-project");
@@ -66,6 +85,17 @@ describe("reconciliation", () => {
       leadAssigned: true,
       memberAssigned: true,
     }));
+    work.milestones.set("work-milestone", {
+      id: "work-milestone",
+      projectId: "work-project",
+      workspaceKey: "work",
+      name: "Launch",
+      description: "Launch milestone",
+      targetDate: "2026-02-01",
+      sortOrder: 1,
+      archived: false,
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    });
     work.issues.set("work-1", issue("work", {
       id: "work-1",
       identifier: "WORK-1",
@@ -74,6 +104,7 @@ describe("reconciliation", () => {
       statusName: "Todo",
       assigneeEmail: "me@example.com",
       projectId: "work-project",
+      projectMilestoneId: "work-milestone",
     }));
 
     const result = await engine.run(true);
@@ -88,7 +119,15 @@ describe("reconciliation", () => {
     }));
     expect(personalProject.labelNames).toEqual(["sync:work", "frv:work"]);
     expect(work.projects.get("work-project")?.labelNames).toEqual([]);
+    expect([...personal.milestones.values()]).toEqual([expect.objectContaining({
+      projectId: personalProject.id,
+      name: "Launch",
+      description: "Launch milestone",
+      targetDate: "2026-02-01",
+      sortOrder: 1,
+    })]);
     expect([...personal.issues.values()][0].projectId).toBe(personalProject.id);
+    expect([...personal.issues.values()][0].projectMilestoneId).toBe([...personal.milestones.keys()][0]);
     expect(personal.projectLinks).toHaveLength(1);
     expect(state.findProjectMappingByExternal("work", "work-project")?.personalProjectId)
       .toBe(personalProject.id);
@@ -177,6 +216,254 @@ describe("reconciliation", () => {
     state.close();
   });
 
+  it("synchronizes mapped milestone fields and deletes the counterpart", async () => {
+    const { personal, work, state, engine } = setup();
+    personal.projects.set("personal-project", project("personal", {
+      id: "personal-project",
+      url: "https://linear.app/personal/project/personal-project",
+      name: "Shared project",
+      statusName: "Backlog",
+      externalLinks: [{
+        workspaceKey: "work",
+        projectId: "work-project",
+        projectUrl: "https://linear.app/work/project/work-project",
+      }],
+    }));
+    work.projects.set("work-project", project("work", {
+      id: "work-project",
+      url: "https://linear.app/work/project/work-project",
+      name: "Shared project",
+      statusName: "Backlog",
+    }));
+    personal.milestones.set("personal-milestone", {
+      id: "personal-milestone",
+      projectId: "personal-project",
+      workspaceKey: "personal",
+      name: "Launch",
+      description: "Initial launch",
+      targetDate: "2026-02-01",
+      sortOrder: 1,
+      archived: false,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    work.milestones.set("work-milestone", {
+      id: "work-milestone",
+      projectId: "work-project",
+      workspaceKey: "work",
+      name: "Launch",
+      description: "Initial launch",
+      targetDate: "2026-02-01",
+      sortOrder: 1,
+      archived: false,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    await engine.run(true);
+    personal.milestones.get("personal-milestone")!.description = "Ready to launch";
+    personal.milestones.get("personal-milestone")!.targetDate = "2026-02-15";
+    await engine.run(false);
+
+    expect(work.milestones.get("work-milestone")).toEqual(expect.objectContaining({
+      description: "Ready to launch",
+      targetDate: "2026-02-15",
+    }));
+
+    personal.milestones.delete("personal-milestone");
+    await engine.run(false);
+
+    expect(work.milestones).toHaveLength(0);
+    expect(state.listMilestoneMappings("work")).toHaveLength(0);
+    state.close();
+  });
+
+  it("flags concurrent milestone edits without overwriting either side", async () => {
+    const { personal, work, state, engine } = setup();
+    personal.projects.set("personal-project", project("personal", {
+      id: "personal-project",
+      url: "https://linear.app/personal/project/personal-project",
+      name: "Shared project",
+      statusName: "Backlog",
+      externalLinks: [{
+        workspaceKey: "work",
+        projectId: "work-project",
+        projectUrl: "https://linear.app/work/project/work-project",
+      }],
+    }));
+    work.projects.set("work-project", project("work", {
+      id: "work-project",
+      url: "https://linear.app/work/project/work-project",
+      name: "Shared project",
+      statusName: "Backlog",
+    }));
+    personal.milestones.set("personal-milestone", {
+      id: "personal-milestone",
+      projectId: "personal-project",
+      workspaceKey: "personal",
+      name: "Launch",
+      description: "Initial launch",
+      targetDate: null,
+      sortOrder: 1,
+      archived: false,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    work.milestones.set("work-milestone", {
+      id: "work-milestone",
+      projectId: "work-project",
+      workspaceKey: "work",
+      name: "Launch",
+      description: "Initial launch",
+      targetDate: null,
+      sortOrder: 1,
+      archived: false,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    await engine.run(true);
+    personal.milestones.get("personal-milestone")!.description = "Personal launch";
+    work.milestones.get("work-milestone")!.description = "External launch";
+    await engine.run(false);
+
+    expect(personal.milestones.get("personal-milestone")?.description).toBe("Personal launch");
+    expect(work.milestones.get("work-milestone")?.description).toBe("External launch");
+    expect(personal.projects.get("personal-project")?.labelNames).toContain("sync:conflict");
+    expect(personal.projectComments).toHaveLength(1);
+    expect(state.listMilestoneMappings("work")[0].conflict).toBe(true);
+    state.close();
+  });
+
+  it("does not guess between duplicate milestone names", async () => {
+    const { personal, work, state, engine } = setup();
+    personal.projects.set("personal-project", project("personal", {
+      id: "personal-project",
+      url: "https://linear.app/personal/project/personal-project",
+      name: "Shared project",
+      statusName: "Backlog",
+      externalLinks: [{
+        workspaceKey: "work",
+        projectId: "work-project",
+        projectUrl: "https://linear.app/work/project/work-project",
+      }],
+    }));
+    work.projects.set("work-project", project("work", {
+      id: "work-project",
+      url: "https://linear.app/work/project/work-project",
+      name: "Shared project",
+      statusName: "Backlog",
+    }));
+    for (const id of ["personal-milestone-1", "personal-milestone-2"]) {
+      personal.milestones.set(id, {
+        id,
+        projectId: "personal-project",
+        workspaceKey: "personal",
+        name: "Duplicate",
+        description: null,
+        targetDate: null,
+        sortOrder: 1,
+        archived: false,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+    }
+
+    await engine.run(true);
+
+    expect(work.milestones).toHaveLength(0);
+    expect(personal.projects.get("personal-project")?.labelNames).toContain("sync:broken");
+    expect(personal.projectComments).toHaveLength(1);
+    expect(state.listMilestoneMappings("work")).toHaveLength(0);
+    state.close();
+  });
+
+  it("moves a mapped milestone and its issue membership with a mapped project", async () => {
+    const { personal, work, state, engine } = setup();
+    for (const workspace of [personal, work]) {
+      const suffix = workspace.key === "personal" ? "personal" : "work";
+      workspace.projects.set(`${suffix}-project-a`, project(workspace.key, {
+        id: `${suffix}-project-a`,
+        url: `https://linear.app/${workspace.key}/project/${suffix}-project-a`,
+        name: "Project A",
+        statusName: "Backlog",
+        externalLinks: workspace.key === "personal" ? [{
+          workspaceKey: "work",
+          projectId: "work-project-a",
+          projectUrl: "https://linear.app/work/project/work-project-a",
+        }] : [],
+      }));
+      workspace.projects.set(`${suffix}-project-b`, project(workspace.key, {
+        id: `${suffix}-project-b`,
+        url: `https://linear.app/${workspace.key}/project/${suffix}-project-b`,
+        name: "Project B",
+        statusName: "Backlog",
+        externalLinks: workspace.key === "personal" ? [{
+          workspaceKey: "work",
+          projectId: "work-project-b",
+          projectUrl: "https://linear.app/work/project/work-project-b",
+        }] : [],
+      }));
+    }
+    personal.milestones.set("personal-milestone", {
+      id: "personal-milestone",
+      projectId: "personal-project-a",
+      workspaceKey: "personal",
+      name: "Launch",
+      description: null,
+      targetDate: null,
+      sortOrder: 1,
+      archived: false,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    work.milestones.set("work-milestone", {
+      id: "work-milestone",
+      projectId: "work-project-a",
+      workspaceKey: "work",
+      name: "Launch",
+      description: null,
+      targetDate: null,
+      sortOrder: 1,
+      archived: false,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    personal.issues.set("personal-issue", issue("personal", {
+      id: "personal-issue",
+      identifier: "PER-1",
+      url: "https://linear.app/personal/issue/PER-1",
+      title: "Moving task",
+      statusName: "Todo",
+      projectId: "personal-project-a",
+      projectMilestoneId: "personal-milestone",
+      externalLinks: [{
+        workspaceKey: "work",
+        issueId: "work-issue",
+        issueUrl: "https://linear.app/work/issue/WORK-1",
+      }],
+    }));
+    work.issues.set("work-issue", issue("work", {
+      id: "work-issue",
+      identifier: "WORK-1",
+      url: "https://linear.app/work/issue/WORK-1",
+      title: "Moving task",
+      statusName: "Todo",
+      assigneeEmail: "me@example.com",
+      projectId: "work-project-a",
+      projectMilestoneId: "work-milestone",
+    }));
+
+    await engine.run(true);
+    personal.milestones.get("personal-milestone")!.projectId = "personal-project-b";
+    personal.issues.get("personal-issue")!.projectId = "personal-project-b";
+    await engine.run(false);
+
+    expect(work.milestones.get("work-milestone")?.projectId).toBe("work-project-b");
+    expect(work.issues.get("work-issue")).toEqual(expect.objectContaining({
+      projectId: "work-project-b",
+      projectMilestoneId: "work-milestone",
+    }));
+    expect(state.listMilestoneMappings("work")[0]).toEqual(expect.objectContaining({
+      personalProjectId: "personal-project-b",
+      externalProjectId: "work-project-b",
+    }));
+    state.close();
+  });
+
   it("uses an explicit project link before a project routing label", async () => {
     const { personal, work, state, engine } = setup();
     work.projects.set("linked-project", project("work", {
@@ -206,6 +493,67 @@ describe("reconciliation", () => {
     state.close();
   });
 
+  it("includes the mapped project milestone when creating an outbound issue", async () => {
+    const { personal, work, state, engine } = setup();
+    personal.projects.set("personal-project", project("personal", {
+      id: "personal-project",
+      url: "https://linear.app/personal/project/personal-project",
+      name: "Shared project",
+      statusName: "Backlog",
+      externalLinks: [{
+        workspaceKey: "work",
+        projectId: "work-project",
+        projectUrl: "https://linear.app/work/project/work-project",
+      }],
+    }));
+    work.projects.set("work-project", project("work", {
+      id: "work-project",
+      url: "https://linear.app/work/project/work-project",
+      name: "Shared project",
+      statusName: "Backlog",
+    }));
+    personal.milestones.set("personal-milestone", {
+      id: "personal-milestone",
+      projectId: "personal-project",
+      workspaceKey: "personal",
+      name: "Launch",
+      description: null,
+      targetDate: null,
+      sortOrder: 1,
+      archived: false,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    work.milestones.set("work-milestone", {
+      id: "work-milestone",
+      projectId: "work-project",
+      workspaceKey: "work",
+      name: "Launch",
+      description: null,
+      targetDate: null,
+      sortOrder: 1,
+      archived: false,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    personal.issues.set("personal-1", issue("personal", {
+      id: "personal-1",
+      identifier: "PER-1",
+      url: "https://linear.app/personal/issue/PER-1",
+      title: "Milestoned task",
+      statusName: "Todo",
+      labelNames: ["sync:work"],
+      projectId: "personal-project",
+      projectMilestoneId: "personal-milestone",
+    }));
+
+    await engine.run(true);
+
+    expect([...work.issues.values()]).toEqual([expect.objectContaining({
+      projectId: "work-project",
+      projectMilestoneId: "work-milestone",
+    })]);
+    state.close();
+  });
+
   it("synchronizes issue project membership only after both projects are mapped", async () => {
     const { personal, work, state, engine } = setup();
     personal.projects.set("personal-project", project("personal", {
@@ -225,6 +573,28 @@ describe("reconciliation", () => {
       name: "Shared project",
       statusName: "Backlog",
     }));
+    personal.milestones.set("personal-milestone", {
+      id: "personal-milestone",
+      projectId: "personal-project",
+      workspaceKey: "personal",
+      name: "Launch",
+      description: null,
+      targetDate: null,
+      sortOrder: 1,
+      archived: false,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    work.milestones.set("work-milestone", {
+      id: "work-milestone",
+      projectId: "work-project",
+      workspaceKey: "work",
+      name: "Launch",
+      description: null,
+      targetDate: null,
+      sortOrder: 1,
+      archived: false,
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
     personal.issues.set("personal-1", issue("personal", {
       id: "personal-1",
       identifier: "PER-1",
@@ -247,24 +617,45 @@ describe("reconciliation", () => {
 
     await engine.run(true);
     personal.issues.get("personal-1")!.projectId = "personal-project";
+    personal.issues.get("personal-1")!.projectMilestoneId = "personal-milestone";
     await engine.run(false);
 
     expect(work.issues.get("work-1")?.projectId).toBe("work-project");
+    expect(work.issues.get("work-1")?.projectMilestoneId).toBe("work-milestone");
+
+    personal.issues.get("personal-1")!.projectMilestoneId = "unmapped-milestone";
+    await engine.run(false);
+
+    expect(work.issues.get("work-1")?.projectMilestoneId).toBe("work-milestone");
+    personal.issues.get("personal-1")!.projectMilestoneId = "personal-milestone";
+    await engine.run(false);
+
+    work.issues.get("work-1")!.projectMilestoneId = "unmapped-milestone";
+    await engine.run(false);
+
+    expect(personal.issues.get("personal-1")?.projectMilestoneId).toBe("personal-milestone");
+    work.issues.get("work-1")!.projectMilestoneId = "work-milestone";
+    await engine.run(false);
 
     personal.issues.get("personal-1")!.projectId = null;
+    personal.issues.get("personal-1")!.projectMilestoneId = null;
     await engine.run(false);
 
     expect(work.issues.get("work-1")?.projectId).toBeNull();
+    expect(work.issues.get("work-1")?.projectMilestoneId).toBeNull();
 
     personal.issues.get("personal-1")!.projectId = "personal-project";
+    personal.issues.get("personal-1")!.projectMilestoneId = "personal-milestone";
     await engine.run(false);
 
     expect(work.issues.get("work-1")?.projectId).toBe("work-project");
+    expect(work.issues.get("work-1")?.projectMilestoneId).toBe("work-milestone");
 
     work.issues.get("work-1")!.projectId = null;
     await engine.run(false);
 
     expect(personal.issues.get("personal-1")?.projectId).toBe("personal-project");
+    expect(personal.issues.get("personal-1")?.projectMilestoneId).toBe("personal-milestone");
     state.close();
   });
 

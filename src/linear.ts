@@ -2,6 +2,7 @@ import type {
   IssueRelationChange,
   IssueRelationSnapshot,
   IssueSnapshot,
+  MilestoneSnapshot,
   ProjectSnapshot,
   ProjectStatus,
   WorkspaceKey,
@@ -22,6 +23,8 @@ export type LinearIssue = IssueSnapshot & {
   relationChanges: IssueRelationChange[];
 };
 
+export type LinearMilestone = MilestoneSnapshot;
+
 export type ExternalProjectLink = {
   workspaceKey: WorkspaceKey;
   projectId: string;
@@ -41,6 +44,7 @@ export type IssueCreateInput = {
   priority: number;
   assigneeEmail?: string | null;
   projectId?: string | null;
+  projectMilestoneId?: string | null;
 };
 
 export type IssueUpdate = Partial<
@@ -52,6 +56,7 @@ export type IssueUpdate = Partial<
   assigneeEmail?: string | null;
   parentIssueId?: string | null;
   projectId?: string | null;
+  projectMilestoneId?: string | null;
 };
 
 export type ProjectCreateInput = {
@@ -72,6 +77,16 @@ export type ProjectUpdate = Partial<Pick<
   leadAssigned?: boolean;
   memberAssigned?: boolean;
 };
+
+export type MilestoneCreateInput = Pick<
+  MilestoneSnapshot,
+  "projectId" | "name" | "description" | "targetDate" | "sortOrder"
+>;
+
+export type MilestoneUpdate = Partial<Pick<
+  MilestoneSnapshot,
+  "projectId" | "name" | "description" | "targetDate" | "sortOrder"
+>>;
 
 export type IssueRelationCreateInput = {
   issueId: string;
@@ -111,6 +126,11 @@ export interface LinearWorkspace {
   updateIssue(issueId: string, update: IssueUpdate): Promise<LinearIssue>;
   createProject(input: ProjectCreateInput, teamName: string): Promise<LinearProject>;
   updateProject(projectId: string, update: ProjectUpdate): Promise<LinearProject>;
+  listProjectMilestones(projectId: string, includeArchived?: boolean): Promise<LinearMilestone[]>;
+  getProjectMilestone(milestoneId: string, includeArchived?: boolean): Promise<LinearMilestone | null>;
+  createProjectMilestone(input: MilestoneCreateInput): Promise<LinearMilestone>;
+  updateProjectMilestone(milestoneId: string, update: MilestoneUpdate): Promise<LinearMilestone>;
+  deleteProjectMilestone(milestoneId: string): Promise<void>;
   createIssueRelation(input: IssueRelationCreateInput): Promise<IssueRelationSnapshot>;
   deleteIssueRelation(relationId: string): Promise<void>;
   restoreIssue(issueId: string): Promise<LinearIssue>;

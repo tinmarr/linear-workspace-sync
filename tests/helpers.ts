@@ -11,8 +11,11 @@ import type {
   IssueRelationCreateInput,
   IssueUpdate,
   LinearIssue,
+  LinearMilestone,
   LinearProject,
   LinearWorkspace,
+  MilestoneCreateInput,
+  MilestoneUpdate,
   ProjectCreateInput,
   ProjectQuery,
   ProjectUpdate,
@@ -23,6 +26,7 @@ export class FakeWorkspace implements LinearWorkspace {
   public readonly viewerEmail: string;
   public readonly issues = new Map<string, LinearIssue>();
   public readonly projects = new Map<string, LinearProject>();
+  public readonly milestones = new Map<string, LinearMilestone>();
   public readonly labels = new Set<string>();
   public readonly projectLabels = new Set<string>();
   public readonly comments: Array<{ issueId: string; body: string }> = [];
@@ -35,6 +39,7 @@ export class FakeWorkspace implements LinearWorkspace {
   public getProjectCalls = 0;
   private nextIssue = 1;
   private nextProject = 1;
+  private nextMilestone = 1;
   private relationSequence = 1;
   private clock = 1;
 
@@ -108,6 +113,7 @@ export class FakeWorkspace implements LinearWorkspace {
       archived: false,
       labelNames: [],
       projectId: input.projectId ?? null,
+      projectMilestoneId: input.projectMilestoneId ?? null,
       externalLinks: [],
       updatedAt: this.timestamp(),
       parentIssueId: null,
@@ -149,6 +155,48 @@ export class FakeWorkspace implements LinearWorkspace {
     Object.assign(project, update);
     project.updatedAt = this.timestamp();
     return structuredClone(project);
+  }
+
+  public async listProjectMilestones(projectId: string, includeArchived = false): Promise<LinearMilestone[]> {
+    return [...this.milestones.values()]
+      .filter((milestone) => milestone.projectId === projectId)
+      .filter((milestone) => includeArchived || !milestone.archived)
+      .map((milestone) => structuredClone(milestone));
+  }
+
+  public async getProjectMilestone(milestoneId: string, includeArchived = false): Promise<LinearMilestone | null> {
+    const milestone = this.milestones.get(milestoneId);
+    if (!milestone || (!includeArchived && milestone.archived)) return null;
+    return structuredClone(milestone);
+  }
+
+  public async createProjectMilestone(input: MilestoneCreateInput): Promise<LinearMilestone> {
+    const id = `${this.key}-milestone-${this.nextMilestone++}`;
+    const milestone: LinearMilestone = {
+      id,
+      projectId: input.projectId,
+      workspaceKey: this.key,
+      name: input.name,
+      description: input.description,
+      targetDate: input.targetDate,
+      sortOrder: input.sortOrder,
+      archived: false,
+      updatedAt: this.timestamp(),
+    };
+    this.milestones.set(id, milestone);
+    return structuredClone(milestone);
+  }
+
+  public async updateProjectMilestone(milestoneId: string, update: MilestoneUpdate): Promise<LinearMilestone> {
+    const milestone = this.milestones.get(milestoneId);
+    if (!milestone) throw new Error(`Unknown milestone ${milestoneId}`);
+    Object.assign(milestone, update);
+    milestone.updatedAt = this.timestamp();
+    return structuredClone(milestone);
+  }
+
+  public async deleteProjectMilestone(milestoneId: string): Promise<void> {
+    if (!this.milestones.delete(milestoneId)) throw new Error(`Unknown milestone ${milestoneId}`);
   }
 
   public async updateIssue(issueId: string, update: IssueUpdate): Promise<LinearIssue> {
@@ -310,6 +358,7 @@ export function issue(
     archived: values.archived ?? false,
     labelNames: values.labelNames ?? [],
     projectId: values.projectId ?? null,
+    projectMilestoneId: values.projectMilestoneId ?? null,
     externalLinks: values.externalLinks ?? [],
     updatedAt: values.updatedAt ?? "2026-01-01T00:00:00.000Z",
     parentIssueId: values.parentIssueId ?? null,

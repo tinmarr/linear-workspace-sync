@@ -125,6 +125,155 @@ describe("SDK issue hydration", () => {
     expect(observedFilter).toMatchObject({ completedAt: { null: true } });
   });
 
+  it("hydrates and mutates project milestones", async () => {
+    const appConfig = config(":memory:");
+    const connection = <T>(nodes: T[]) => ({
+      nodes,
+      pageInfo: { hasNextPage: false },
+      fetchNext: async () => connection([]),
+    });
+    const milestone = {
+      id: "milestone-1",
+      projectId: "project-1",
+      name: "Launch",
+      description: "Initial launch",
+      targetDate: new Date("2026-02-01T00:00:00.000Z"),
+      sortOrder: 2,
+      archivedAt: null,
+      updatedAt: new Date("2026-01-02T00:00:00.000Z"),
+    };
+    const createInputs: unknown[] = [];
+    const updateInputs: unknown[] = [];
+    const deletedIds: string[] = [];
+    const client = {
+      project: async () => ({
+        projectMilestones: async () => connection([milestone]),
+      }),
+      projectMilestone: async () => milestone,
+      createProjectMilestone: async (input: unknown) => {
+        createInputs.push(input);
+        return { projectMilestone: Promise.resolve(milestone) };
+      },
+      updateProjectMilestone: async (_id: string, input: unknown) => {
+        updateInputs.push(input);
+        return { projectMilestone: Promise.resolve({ ...milestone, name: "Updated" }) };
+      },
+      deleteProjectMilestone: async (id: string) => {
+        deletedIds.push(id);
+        return { success: true };
+      },
+    };
+    const Workspace = SdkLinearWorkspace as unknown as new (...args: any[]) => SdkLinearWorkspace;
+    const workspace = new Workspace(
+      "personal",
+      appConfig.personal,
+      client,
+      { id: "viewer", email: "me@example.com", url: "https://linear.app/personal" },
+      appConfig.external,
+    );
+
+    await expect(workspace.listProjectMilestones("project-1")).resolves.toEqual([expect.objectContaining({
+      id: "milestone-1",
+      projectId: "project-1",
+      targetDate: "2026-02-01",
+      sortOrder: 2,
+    })]);
+    await expect(workspace.getProjectMilestone("milestone-1")).resolves.toEqual(expect.objectContaining({
+      name: "Launch",
+    }));
+    await workspace.createProjectMilestone({
+      projectId: "project-1",
+      name: "Launch",
+      description: "Initial launch",
+      targetDate: "2026-02-01",
+      sortOrder: 2,
+    });
+    await workspace.updateProjectMilestone("milestone-1", { name: "Updated" });
+    await workspace.deleteProjectMilestone("milestone-1");
+
+    expect(createInputs).toEqual([{
+      projectId: "project-1",
+      name: "Launch",
+      description: "Initial launch",
+      targetDate: "2026-02-01",
+      sortOrder: 2,
+    }]);
+    expect(updateInputs).toEqual([{ name: "Updated" }]);
+    expect(deletedIds).toEqual(["milestone-1"]);
+  });
+
+  it("passes project milestone IDs through issue mutations", async () => {
+    const appConfig = config(":memory:");
+    const connection = <T>(nodes: T[]) => ({
+      nodes,
+      pageInfo: { hasNextPage: false },
+      fetchNext: async () => connection([]),
+    });
+    const issue = {
+      id: "personal-1",
+      identifier: "PER-1",
+      url: "https://linear.app/personal/issue/PER-1",
+      title: "Task",
+      description: null,
+      dueDate: null,
+      estimate: null,
+      priority: 0,
+      archivedAt: null,
+      trashed: false,
+      labelIds: [],
+      stateId: "state-todo",
+      assigneeId: null,
+      projectId: "project-1",
+      projectMilestoneId: "milestone-1",
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      parentId: null,
+    };
+    const team = {
+      id: "team-personal",
+      name: "Personal",
+      states: async () => connection([{ id: "state-todo", name: "Todo", archivedAt: null }]),
+    };
+    const createInputs: unknown[] = [];
+    const updateInputs: unknown[] = [];
+    const client = {
+      teams: async () => connection([team]),
+      createIssue: async (input: unknown) => {
+        createInputs.push(input);
+        return { issue: Promise.resolve(issue) };
+      },
+      updateIssue: async (_id: string, input: unknown) => {
+        updateInputs.push(input);
+        return { issue: Promise.resolve({ ...issue, projectMilestoneId: "milestone-2" }) };
+      },
+    };
+    const Workspace = SdkLinearWorkspace as unknown as new (...args: any[]) => SdkLinearWorkspace;
+    const workspace = new Workspace(
+      "personal",
+      appConfig.personal,
+      client,
+      { id: "viewer", email: "me@example.com", url: "https://linear.app/personal" },
+      [],
+    );
+
+    await workspace.createIssue({
+      title: "Task",
+      description: null,
+      statusName: "Todo",
+      dueDate: null,
+      estimate: null,
+      priority: 0,
+      projectId: "project-1",
+      projectMilestoneId: "milestone-1",
+    }, "Personal");
+    await workspace.updateIssue("personal-1", { projectMilestoneId: "milestone-2" });
+
+    expect(createInputs).toEqual([expect.objectContaining({
+      projectId: "project-1",
+      projectMilestoneId: "milestone-1",
+    })]);
+    expect(updateInputs).toEqual([{ projectMilestoneId: "milestone-2" }]);
+  });
+
   it("hydrates native relationships once and exposes relation mutations", async () => {
     const appConfig = config(":memory:");
     const connection = <T>(nodes: T[]) => ({
