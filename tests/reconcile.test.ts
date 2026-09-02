@@ -18,7 +18,8 @@ function setup() {
 
 describe("reconciliation", () => {
   it("creates an external project from a personal project routing label", async () => {
-    const { personal, work, state, engine } = setup();
+    const { appConfig, personal, work, state, engine } = setup();
+    appConfig.external[0].personalLabels = ["frv:work"];
     personal.projects.set("personal-project", project("personal", {
       id: "personal-project",
       url: "https://linear.app/personal/project/personal-project",
@@ -45,6 +46,8 @@ describe("reconciliation", () => {
       leadAssigned: true,
       memberAssigned: true,
     })]);
+    expect(personal.projects.get("personal-project")?.labelNames).toEqual(["sync:work", "frv:work"]);
+    expect([...work.projects.values()][0].labelNames).toEqual([]);
     expect(personal.projectLinks).toHaveLength(1);
     expect(state.findProjectMappingByExternal("work", [...work.projects.keys()][0])?.personalProjectId)
       .toBe("personal-project");
@@ -52,7 +55,8 @@ describe("reconciliation", () => {
   });
 
   it("brings in an external project when an eligible inbound issue belongs to it", async () => {
-    const { personal, work, state, engine } = setup();
+    const { appConfig, personal, work, state, engine } = setup();
+    appConfig.external[0].personalLabels = ["frv:work"];
     work.projects.set("work-project", project("work", {
       id: "work-project",
       url: "https://linear.app/work/project/work-project",
@@ -82,6 +86,8 @@ describe("reconciliation", () => {
       leadAssigned: true,
       memberAssigned: true,
     }));
+    expect(personalProject.labelNames).toEqual(["sync:work", "frv:work"]);
+    expect(work.projects.get("work-project")?.labelNames).toEqual([]);
     expect([...personal.issues.values()][0].projectId).toBe(personalProject.id);
     expect(personal.projectLinks).toHaveLength(1);
     expect(state.findProjectMappingByExternal("work", "work-project")?.personalProjectId)

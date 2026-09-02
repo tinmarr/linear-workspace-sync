@@ -48,6 +48,9 @@ export class ProjectSynchronizer {
   public async ensurePersonalLabels(): Promise<void> {
     for (const workspace of this.config.external) {
       if (workspace.routingLabel) await this.personal.ensureProjectLabel(workspace.routingLabel);
+      for (const label of workspace.personalLabels) {
+        await this.personal.ensureProjectLabel(label);
+      }
     }
     await this.personal.ensureProjectLabel(this.config.syncLabels.conflict);
     await this.personal.ensureProjectLabel(this.config.syncLabels.broken);
@@ -590,6 +593,9 @@ export class ProjectSynchronizer {
     if (pair.externalConfig.routingLabel && !personalProject.labelNames.includes(pair.externalConfig.routingLabel)) {
       await this.personal.addProjectLabel(personalProject.id, pair.externalConfig.routingLabel);
       personalProject.labelNames.push(pair.externalConfig.routingLabel);
+    }
+    for (const label of pair.externalConfig.personalLabels) {
+      await this.addProjectLabelIfMissing(personalProject, label);
     }
     const hasLink = this.projectLinkMatches(personalProject.externalLinks, pair.externalConfig.key, externalProject);
     if (!hasLink) {
