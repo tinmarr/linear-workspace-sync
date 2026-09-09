@@ -82,8 +82,15 @@ describe("SDK issue hydration", () => {
       attachments: async () => {
         attachmentQueries++;
         return connection([{
+          id: "mapping-attachment",
           issueId: "personal-1",
           url: "https://linear.app/work/issue/WORK-1",
+          title: "Work WORK-1",
+        }, {
+          id: "docs-attachment",
+          issueId: "personal-1",
+          url: "https://docs.example.com/task",
+          title: "Task docs",
         }]);
       },
       issue: async () => {
@@ -116,6 +123,7 @@ describe("SDK issue hydration", () => {
         workspaceKey: "work",
         issueId: "WORK-1",
       }],
+      resources: [{ id: "docs-attachment", url: "https://docs.example.com/task", title: "Task docs" }],
     });
     expect(cached).toBe(issues[0]);
     expect(issueLabelQueries).toBe(1);
@@ -258,6 +266,7 @@ describe("SDK issue hydration", () => {
         updateInputs.push(input);
         return { issue: Promise.resolve({ ...issue, projectMilestoneId: "milestone-2" }) };
       },
+      attachments: async () => connection([]),
     };
     const Workspace = SdkLinearWorkspace as unknown as new (...args: any[]) => SdkLinearWorkspace;
     const workspace = new Workspace(
@@ -505,7 +514,13 @@ describe("SDK project hydration and mutations", () => {
       members: () => connection([{ id: "viewer" }]),
       labels: () => connection([{ name: "sync:work", archivedAt: null }]),
       externalLinks: () => connection([{
+        id: "mapping-project-link",
         url: "https://linear.app/work/project/work-project",
+        label: "Work project",
+      }, {
+        id: "docs-project-link",
+        url: "https://docs.example.com/project",
+        label: "Project docs",
       }]),
     };
     const team = {
@@ -576,6 +591,7 @@ describe("SDK project hydration and mutations", () => {
       memberAssigned: true,
       labelNames: ["sync:work"],
       externalLinks: [{ workspaceKey: "work", projectId: "work-project" }],
+      resources: [{ id: "docs-project-link", url: "https://docs.example.com/project", title: "Project docs" }],
     });
     expect(created.name).toBe("Shared project");
     expect(createdInputs).toEqual([expect.objectContaining({
@@ -589,5 +605,89 @@ describe("SDK project hydration and mutations", () => {
       leadId: null,
       memberIds: [],
     })]);
+  });
+
+  it("creates, updates, and deletes issue and project resources", async () => {
+    const appConfig = config(":memory:");
+    const createdAttachmentInputs: unknown[] = [];
+    const updatedAttachmentInputs: unknown[] = [];
+    const deletedAttachmentIds: string[] = [];
+    const createdProjectLinkInputs: unknown[] = [];
+    const updatedProjectLinkInputs: unknown[] = [];
+    const deletedProjectLinkIds: string[] = [];
+    const client = {
+      createAttachment: async (input: unknown) => {
+        createdAttachmentInputs.push(input);
+        return {
+          attachment: Promise.resolve({ id: "issue-resource", url: "https://docs.example.com/task", title: "Task docs" }),
+        };
+      },
+      updateAttachment: async (id: string, input: unknown) => {
+        updatedAttachmentInputs.push({ id, input });
+        return {
+          attachment: Promise.resolve({ id, url: "https://docs.example.com/task", title: "Updated docs" }),
+        };
+      },
+      deleteAttachment: async (id: string) => {
+        deletedAttachmentIds.push(id);
+        return { success: true };
+      },
+      createEntityExternalLink: async (input: unknown) => {
+        createdProjectLinkInputs.push(input);
+        return {
+          entityExternalLink: Promise.resolve({ id: "project-resource", url: "https://docs.example.com/project", label: "Project docs" }),
+        };
+      },
+      updateEntityExternalLink: async (id: string, input: unknown) => {
+        updatedProjectLinkInputs.push({ id, input });
+        return {
+          entityExternalLink: Promise.resolve({ id, url: "https://docs.example.com/project", label: "Updated project docs" }),
+        };
+      },
+      deleteEntityExternalLink: async (id: string) => {
+        deletedProjectLinkIds.push(id);
+        return { success: true };
+      },
+    };
+    const Workspace = SdkLinearWorkspace as unknown as new (...args: any[]) => SdkLinearWorkspace;
+    const workspace = new Workspace(
+      "personal",
+      appConfig.personal,
+      client,
+      { id: "viewer", email: "me@example.com", url: "https://linear.app/personal" },
+      appConfig.external,
+    );
+
+    await expect(workspace.addIssueResource("personal-1", "https://docs.example.com/task", "Task docs"))
+      .resolves.toEqual({ id: "issue-resource", url: "https://docs.example.com/task", title: "Task docs" });
+    await expect(workspace.updateIssueResource("issue-resource", "Updated docs"))
+      .resolves.toEqual({ id: "issue-resource", url: "https://docs.example.com/task", title: "Updated docs" });
+    await workspace.removeIssueResource("issue-resource");
+    await expect(workspace.addProjectResource("personal-project", "https://docs.example.com/project", "Project docs"))
+      .resolves.toEqual({ id: "project-resource", url: "https://docs.example.com/project", title: "Project docs" });
+    await expect(workspace.updateProjectResource("project-resource", "Updated project docs"))
+      .resolves.toEqual({ id: "project-resource", url: "https://docs.example.com/project", title: "Updated project docs" });
+    await workspace.removeProjectResource("project-resource");
+
+    expect(createdAttachmentInputs).toEqual([{
+      issueId: "personal-1",
+      url: "https://docs.example.com/task",
+      title: "Task docs",
+    }]);
+    expect(updatedAttachmentInputs).toEqual([{
+      id: "issue-resource",
+      input: { title: "Updated docs" },
+    }]);
+    expect(deletedAttachmentIds).toEqual(["issue-resource"]);
+    expect(createdProjectLinkInputs).toEqual([{
+      projectId: "personal-project",
+      url: "https://docs.example.com/project",
+      label: "Project docs",
+    }]);
+    expect(updatedProjectLinkInputs).toEqual([{
+      id: "project-resource",
+      input: { label: "Updated project docs" },
+    }]);
+    expect(deletedProjectLinkIds).toEqual(["project-resource"]);
   });
 });

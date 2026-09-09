@@ -96,8 +96,12 @@ _Avoid_: synced comment, external notification
 A task attribute included in two-way synchronization for the MVP: title, description, status, due date, estimate, or priority.
 _Avoid_: synced metadata, mirrored field
 
+**Managed resource**:
+An ordinary issue attachment or project external link synchronized by URL and display title or label. The personal issue or project link that identifies a sync mapping is synchronization metadata, not a managed resource.
+_Avoid_: synced attachment, resource mirror
+
 **Workspace-local metadata**:
-Issue information that remains owned by each workspace and is not overwritten by synchronization, including ordinary labels, team, cycle, and comments. Assignee is initialized in both workspaces when a personal issue creates a new external mapping, then reflected one way from external to personal. Native issue relationships are governed separately by the relationship synchronization rules.
+Issue or project information that remains owned by each workspace and is not overwritten by synchronization, including ordinary labels, team, cycle, documents, integrations, and comments. Assignee is initialized in both workspaces when a personal issue creates a new external mapping, then reflected one way from external to personal. Native issue relationships and managed resources are governed separately by their synchronization rules.
 _Avoid_: unsupported metadata, local-only field
 
 **Assignee reflection**:

@@ -5,8 +5,13 @@ import type {
   MilestoneSnapshot,
   ProjectSnapshot,
   ProjectStatus,
+  ResourceSnapshot,
   WorkspaceKey,
 } from "./domain.js";
+
+export type LinearResource = ResourceSnapshot & {
+  id: string;
+};
 
 export type ExternalIssueLink = {
   workspaceKey: WorkspaceKey;
@@ -14,8 +19,9 @@ export type ExternalIssueLink = {
   issueUrl: string;
 };
 
-export type LinearIssue = IssueSnapshot & {
+export type LinearIssue = Omit<IssueSnapshot, "resources"> & {
   externalLinks: ExternalIssueLink[];
+  resources: LinearResource[];
   updatedAt: string;
   parentIssueId: string | null;
   parentUpdatedAt: string | null;
@@ -32,8 +38,9 @@ export type ExternalProjectLink = {
   projectUrl: string;
 };
 
-export type LinearProject = ProjectSnapshot & {
+export type LinearProject = Omit<ProjectSnapshot, "resources"> & {
   externalLinks: ExternalProjectLink[];
+  resources: LinearResource[];
 };
 
 export type IssueCreateInput = {
@@ -101,6 +108,7 @@ export type IssueQuery = {
   includeArchived?: boolean;
   includeLabels?: boolean;
   includeExternalLinks?: boolean;
+  includeResources?: boolean;
   includeRelationships?: boolean;
   excludeCompleted?: boolean;
 };
@@ -110,6 +118,7 @@ export type ProjectQuery = {
   includeArchived?: boolean;
   includeLabels?: boolean;
   includeExternalLinks?: boolean;
+  includeResources?: boolean;
 };
 
 export interface LinearWorkspace {
@@ -139,10 +148,16 @@ export interface LinearWorkspace {
   addLabel(issueId: string, text: string): Promise<void>;
   removeLabel(issueId: string, text: string): Promise<void>;
   addPersonalLink(issueId: string, targetUrl: string, title: string): Promise<void>;
+  addIssueResource(issueId: string, targetUrl: string, title: string): Promise<LinearResource>;
+  updateIssueResource(resourceId: string, title: string): Promise<LinearResource>;
+  removeIssueResource(resourceId: string): Promise<void>;
   addPersonalNotification(issueId: string, message: string): Promise<void>;
   ensureProjectLabel(text: string): Promise<void>;
   addProjectLabel(projectId: string, text: string): Promise<void>;
   removeProjectLabel(projectId: string, text: string): Promise<void>;
   addPersonalProjectLink(projectId: string, targetUrl: string, title: string): Promise<void>;
+  addProjectResource(projectId: string, targetUrl: string, title: string): Promise<LinearResource>;
+  updateProjectResource(resourceId: string, title: string): Promise<LinearResource>;
+  removeProjectResource(resourceId: string): Promise<void>;
   addPersonalProjectNotification(projectId: string, message: string): Promise<void>;
 }

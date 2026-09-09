@@ -10,6 +10,7 @@ import {
 } from "./domain.js";
 import type {
   ExternalIssueLink,
+  ExternalProjectLink,
   IssueCreateInput,
   IssueRelationCreateInput,
   IssueQuery,
@@ -17,6 +18,7 @@ import type {
   LinearIssue,
   LinearMilestone,
   LinearProject,
+  LinearResource,
   LinearWorkspace,
   ProjectCreateInput,
   ProjectQuery,
@@ -187,6 +189,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
         .map((issue) => this.toLinearIssue(issue, {
           includeLabels: query.includeLabels ?? this.linkTargets.length > 0,
           includeExternalLinks: query.includeExternalLinks ?? this.linkTargets.length > 0,
+          includeResources: query.includeResources ?? query.includeExternalLinks ?? this.linkTargets.length > 0,
           includeRelationships: query.includeRelationships ?? false,
         })),
     );
@@ -219,7 +222,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
         logEvent("linear_issue_archived", { workspace: this.config.name, issueId });
         return null;
       }
-      const result = await this.toLinearIssue(issue, { includeRelationships });
+      const result = await this.toLinearIssue(issue, { includeResources: true, includeRelationships });
       this.cacheIssue(result);
       logEvent("linear_issue_fetched", { workspace: this.config.name, identifier: result.identifier });
       return result;
@@ -252,6 +255,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
         .map((project) => this.toLinearProject(project, {
           includeLabels: query.includeLabels ?? true,
           includeExternalLinks: query.includeExternalLinks ?? true,
+          includeResources: query.includeResources ?? query.includeExternalLinks ?? true,
         })),
     );
     for (const project of result) this.cacheProject(project);
@@ -342,7 +346,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     if (!issue) throw new Error(`Linear returned no issue after updateIssue(${issueId})`);
     this.cacheSdkIssue(issue);
     logEvent("linear_issue_updated", { workspace: this.config.name, identifier: issue.identifier, fields: Object.keys(update) });
-    const result = await this.toLinearIssue(issue);
+    const result = await this.toLinearIssue(issue, { includeResources: true });
     this.cacheIssue(result);
     return result;
   }
@@ -555,7 +559,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     const issue = await payload.entity;
     if (!issue) throw new Error(`Linear returned no issue after unarchive(${issueId})`);
     this.cacheSdkIssue(issue);
-    const result = await this.toLinearIssue(issue);
+    const result = await this.toLinearIssue(issue, { includeResources: true });
     this.cacheIssue(result);
     return result;
   }
@@ -592,6 +596,28 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     await this.client.createAttachment({ issueId, url: targetUrl, title });
   }
 
+  public async addIssueResource(issueId: string, targetUrl: string, title: string): Promise<LinearResource> {
+    logEvent("linear_issue_resource_adding", { workspace: this.config.name, issueId, title });
+    const payload = await this.client.createAttachment({ issueId, url: targetUrl, title });
+    const attachment = await payload.attachment;
+    if (!attachment) throw new Error(`Linear returned no attachment after adding ${targetUrl}`);
+    return this.toResource(attachment.id, attachment.url, attachment.title);
+  }
+
+  public async updateIssueResource(resourceId: string, title: string): Promise<LinearResource> {
+    logEvent("linear_issue_resource_updating", { workspace: this.config.name, resourceId, title });
+    const payload = await this.client.updateAttachment(resourceId, { title });
+    const attachment = await payload.attachment;
+    if (!attachment) throw new Error(`Linear returned no attachment after updating ${resourceId}`);
+    return this.toResource(attachment.id, attachment.url, attachment.title);
+  }
+
+  public async removeIssueResource(resourceId: string): Promise<void> {
+    logEvent("linear_issue_resource_removing", { workspace: this.config.name, resourceId });
+    const payload = await this.client.deleteAttachment(resourceId);
+    if (!payload.success) throw new Error(`Linear failed to delete issue attachment ${resourceId}`);
+  }
+
   public async addPersonalNotification(issueId: string, message: string): Promise<void> {
     logEvent("linear_personal_notification_adding", { workspace: this.config.name, issueId });
     await this.notificationClient.createComment({ issueId, body: `${this.viewerUrl} ${message}` });
@@ -624,6 +650,28 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     await this.client.createEntityExternalLink({ projectId, url: targetUrl, label: title });
   }
 
+  public async addProjectResource(projectId: string, targetUrl: string, title: string): Promise<LinearResource> {
+    logEvent("linear_project_resource_adding", { workspace: this.config.name, projectId, title });
+    const payload = await this.client.createEntityExternalLink({ projectId, url: targetUrl, label: title });
+    const link = await payload.entityExternalLink;
+    if (!link) throw new Error(`Linear returned no project resource after adding ${targetUrl}`);
+    return this.toResource(link.id, link.url, link.label);
+  }
+
+  public async updateProjectResource(resourceId: string, title: string): Promise<LinearResource> {
+    logEvent("linear_project_resource_updating", { workspace: this.config.name, resourceId, title });
+    const payload = await this.client.updateEntityExternalLink(resourceId, { label: title });
+    const link = await payload.entityExternalLink;
+    if (!link) throw new Error(`Linear returned no project resource after updating ${resourceId}`);
+    return this.toResource(link.id, link.url, link.label);
+  }
+
+  public async removeProjectResource(resourceId: string): Promise<void> {
+    logEvent("linear_project_resource_removing", { workspace: this.config.name, resourceId });
+    const payload = await this.client.deleteEntityExternalLink(resourceId);
+    if (!payload.success) throw new Error(`Linear failed to delete project resource ${resourceId}`);
+  }
+
   public async addPersonalProjectNotification(projectId: string, message: string): Promise<void> {
     logEvent("linear_personal_project_notification_adding", { workspace: this.config.name, projectId });
     await this.notificationClient.createComment({
@@ -634,15 +682,18 @@ export class SdkLinearWorkspace implements LinearWorkspace {
 
   private async toLinearProject(
     project: SdkProject,
-    options: { includeLabels?: boolean; includeExternalLinks?: boolean } = {},
+    options: { includeLabels?: boolean; includeExternalLinks?: boolean; includeResources?: boolean } = {},
   ): Promise<LinearProject> {
     const includeLabels = options.includeLabels ?? true;
     const includeExternalLinks = options.includeExternalLinks ?? true;
+    const includeResources = options.includeResources ?? true;
     const [status, members, labels, externalLinks] = await Promise.all([
       project.status,
       all(project.members({ includeArchived: false, first: 100 })),
       includeLabels ? all(project.labels({ includeArchived: false, first: 100 })) : Promise.resolve([]),
-      includeExternalLinks ? all(project.externalLinks({ includeArchived: false, first: 100 })) : Promise.resolve([]),
+      includeExternalLinks || includeResources
+        ? all(project.externalLinks({ includeArchived: false, first: 100 }))
+        : Promise.resolve([]),
     ]);
     const result: LinearProject = {
       id: project.id,
@@ -661,30 +712,42 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       labelNames: labels.map((label: SdkProjectLabel) => label.name),
       updatedAt: this.timestamp(project.updatedAt),
       externalLinks: externalLinks.flatMap((link: SdkProjectLink) => {
-        const projectId = projectIdentifierFromUrl(link.url);
-        const workspaceSlug = slugFromUrl(link.url);
-        const workspace = this.linkTargets.find((target) => target.workspaceSlug === workspaceSlug);
-        return projectId && workspace
-          ? [{ workspaceKey: workspace.key, projectId, projectUrl: link.url }]
-          : [];
+        if (!includeExternalLinks) return [];
+        const syncLink = this.externalProjectLinkForUrl(link.url);
+        return syncLink ? [syncLink] : [];
       }),
+      resources: includeResources
+        ? externalLinks
+          .filter((link: SdkProjectLink) => !this.externalProjectLinkForUrl(link.url))
+          .map((link: SdkProjectLink) => this.toResource(link.id, link.url, link.label))
+        : [],
     };
     return result;
   }
 
   private async toLinearIssue(
     issue: SdkIssue,
-    options: { includeLabels?: boolean; includeExternalLinks?: boolean; includeRelationships?: boolean } = {},
+    options: { includeLabels?: boolean; includeExternalLinks?: boolean; includeResources?: boolean; includeRelationships?: boolean } = {},
   ): Promise<LinearIssue> {
     logEvent("linear_issue_hydration_starting", { workspace: this.config.name, identifier: issue.identifier });
     const includeLabels = options.includeLabels ?? this.linkTargets.length > 0;
     const includeExternalLinks = options.includeExternalLinks ?? this.linkTargets.length > 0;
-    const [statusName, assigneeEmail, labelNames, externalLinks] = await Promise.all([
+    const includeResources = options.includeResources ?? this.linkTargets.length > 0;
+    const [statusName, assigneeEmail, labelNames, attachments] = await Promise.all([
       this.statusNameForIssue(issue),
       this.assigneeEmailForIssue(issue),
       includeLabels ? this.labelNamesForIssue(issue) : Promise.resolve([]),
-      includeExternalLinks ? this.externalLinksForIssue(issue.id) : Promise.resolve([]),
+      includeExternalLinks || includeResources ? this.loadAttachmentCatalog() : Promise.resolve([]),
     ]);
+    const issueAttachments = attachments.filter((attachment) => attachment.issueId === issue.id);
+    const externalLinks = includeExternalLinks
+      ? this.extractExternalLinks(issueAttachments.map((attachment) => attachment.url))
+      : [];
+    const resources = includeResources
+      ? issueAttachments
+        .filter((attachment) => !this.extractExternalLinks([attachment.url]).length)
+        .map((attachment) => this.toResource(attachment.id, attachment.url, attachment.title))
+      : [];
     const relationships = options.includeRelationships
       ? await this.relationshipsForIssue(issue)
       : { parentUpdatedAt: null, relations: [], relationChanges: [] };
@@ -705,6 +768,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       projectId: issue.projectId ?? null,
       projectMilestoneId: issue.projectMilestoneId ?? null,
       externalLinks,
+      resources,
       updatedAt: this.timestamp(issue.updatedAt),
       parentIssueId: issue.parentId ?? null,
       parentUpdatedAt: relationships.parentUpdatedAt,
@@ -716,7 +780,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       workspace: this.config.name,
       identifier: issue.identifier,
       labels: labelNames.length,
-      attachments: externalLinks.length,
+      attachments: resources.length + externalLinks.length,
     });
     return result;
   }
@@ -749,6 +813,19 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       if (target && identifier) links.push({ workspaceKey: target.key, issueId: identifier, issueUrl: url });
     }
     return links;
+  }
+
+  private externalProjectLinkForUrl(url: string): ExternalProjectLink | undefined {
+    const projectId = projectIdentifierFromUrl(url);
+    const workspaceSlug = slugFromUrl(url);
+    const workspace = this.linkTargets.find((target) => target.workspaceSlug === workspaceSlug);
+    return projectId && workspace
+      ? { workspaceKey: workspace.key, projectId, projectUrl: url }
+      : undefined;
+  }
+
+  private toResource(id: string, url: string, title: string | null | undefined): LinearResource {
+    return { id, url, title: title ?? url };
   }
 
   private async resolveTeam(teamName: string): Promise<SdkTeam> {
@@ -961,13 +1038,6 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     }
   }
 
-  private async externalLinksForIssue(issueId: string): Promise<ExternalIssueLink[]> {
-    const attachments = await this.loadAttachmentCatalog();
-    return attachments
-      .filter((attachment) => attachment.issueId === issueId)
-      .flatMap((attachment) => this.extractExternalLinks([attachment.url]));
-  }
-
   private async relationshipsForIssue(issue: SdkIssue): Promise<{
     parentUpdatedAt: string | null;
     relations: IssueRelationSnapshot[];
@@ -1030,16 +1100,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     if (this.attachmentCatalog) return this.attachmentCatalog;
     const promise = (async () => {
       logEvent("linear_attachment_catalog_fetching", { workspace: this.config.name });
-      const urlFilters = this.linkTargets
-        .map((target) => target.workspaceSlug)
-        .filter((slug): slug is string => Boolean(slug))
-        .map((slug) => ({ url: { contains: `/${slug}/issue/` } }));
-      const filter = urlFilters.length === 1
-        ? urlFilters[0]
-        : urlFilters.length > 1
-          ? { or: urlFilters }
-          : undefined;
-      const attachments = await all(this.client.attachments({ filter, includeArchived: false, first: 100 }));
+      const attachments = await all(this.client.attachments({ includeArchived: false, first: 100 }));
       logEvent("linear_attachment_catalog_received", { workspace: this.config.name, count: attachments.length });
       return attachments;
     })();

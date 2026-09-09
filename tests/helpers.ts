@@ -13,6 +13,7 @@ import type {
   LinearIssue,
   LinearMilestone,
   LinearProject,
+  LinearResource,
   LinearWorkspace,
   MilestoneCreateInput,
   MilestoneUpdate,
@@ -43,6 +44,7 @@ export class FakeWorkspace implements LinearWorkspace {
   private nextIssue = 1;
   private nextProject = 1;
   private nextMilestone = 1;
+  private nextResource = 1;
   private relationSequence = 1;
   private clock = 1;
 
@@ -131,6 +133,7 @@ export class FakeWorkspace implements LinearWorkspace {
       relations: [],
       relationChanges: [],
       relationshipsLoaded: false,
+      resources: [],
     };
     this.issues.set(id, issue);
     return { ...structuredClone(issue), relationshipsLoaded: false };
@@ -155,6 +158,7 @@ export class FakeWorkspace implements LinearWorkspace {
       labelNames: [],
       updatedAt: this.timestamp(),
       externalLinks: [],
+      resources: [],
     };
     this.projects.set(id, project);
     return structuredClone(project);
@@ -299,6 +303,39 @@ export class FakeWorkspace implements LinearWorkspace {
     }
   }
 
+  public async addIssueResource(issueId: string, targetUrl: string, title: string): Promise<LinearResource> {
+    const issue = this.issues.get(issueId);
+    if (!issue) throw new Error(`Unknown issue ${issueId}`);
+    const existing = issue.resources.find((resource) => resource.url === targetUrl);
+    if (existing) {
+      existing.title = title;
+      return structuredClone(existing);
+    }
+    const resource = { id: `${this.key}-issue-resource-${this.nextResource++}`, url: targetUrl, title };
+    issue.resources.push(resource);
+    return structuredClone(resource);
+  }
+
+  public async updateIssueResource(resourceId: string, title: string): Promise<LinearResource> {
+    for (const issue of this.issues.values()) {
+      const resource = issue.resources.find((candidate) => candidate.id === resourceId);
+      if (!resource) continue;
+      resource.title = title;
+      return structuredClone(resource);
+    }
+    throw new Error(`Unknown issue resource ${resourceId}`);
+  }
+
+  public async removeIssueResource(resourceId: string): Promise<void> {
+    for (const issue of this.issues.values()) {
+      const index = issue.resources.findIndex((resource) => resource.id === resourceId);
+      if (index < 0) continue;
+      issue.resources.splice(index, 1);
+      return;
+    }
+    throw new Error(`Unknown issue resource ${resourceId}`);
+  }
+
   public async addPersonalNotification(issueId: string, body: string): Promise<void> {
     this.comments.push({ issueId, body });
   }
@@ -334,6 +371,39 @@ export class FakeWorkspace implements LinearWorkspace {
     }
   }
 
+  public async addProjectResource(projectId: string, targetUrl: string, title: string): Promise<LinearResource> {
+    const project = this.projects.get(projectId);
+    if (!project) throw new Error(`Unknown project ${projectId}`);
+    const existing = project.resources.find((resource) => resource.url === targetUrl);
+    if (existing) {
+      existing.title = title;
+      return structuredClone(existing);
+    }
+    const resource = { id: `${this.key}-project-resource-${this.nextResource++}`, url: targetUrl, title };
+    project.resources.push(resource);
+    return structuredClone(resource);
+  }
+
+  public async updateProjectResource(resourceId: string, title: string): Promise<LinearResource> {
+    for (const project of this.projects.values()) {
+      const resource = project.resources.find((candidate) => candidate.id === resourceId);
+      if (!resource) continue;
+      resource.title = title;
+      return structuredClone(resource);
+    }
+    throw new Error(`Unknown project resource ${resourceId}`);
+  }
+
+  public async removeProjectResource(resourceId: string): Promise<void> {
+    for (const project of this.projects.values()) {
+      const index = project.resources.findIndex((resource) => resource.id === resourceId);
+      if (index < 0) continue;
+      project.resources.splice(index, 1);
+      return;
+    }
+    throw new Error(`Unknown project resource ${resourceId}`);
+  }
+
   public async addPersonalProjectNotification(projectId: string, body: string): Promise<void> {
     this.projectComments.push({ projectId, body });
   }
@@ -352,7 +422,7 @@ export class FakeWorkspace implements LinearWorkspace {
 export function issue(
   workspaceKey: string,
   values: Partial<IssueSnapshot>
-    & Partial<Pick<LinearIssue, "parentIssueId" | "parentUpdatedAt" | "relations" | "relationChanges" | "updatedAt" | "externalLinks">>
+    & Partial<Pick<LinearIssue, "parentIssueId" | "parentUpdatedAt" | "relations" | "relationChanges" | "updatedAt" | "externalLinks" | "resources">>
     & Pick<IssueSnapshot, "id" | "identifier" | "url" | "title" | "statusName">,
 ): LinearIssue {
   return {
@@ -372,6 +442,7 @@ export function issue(
     projectId: values.projectId ?? null,
     projectMilestoneId: values.projectMilestoneId ?? null,
     externalLinks: values.externalLinks ?? [],
+    resources: values.resources ?? [],
     updatedAt: values.updatedAt ?? "2026-01-01T00:00:00.000Z",
     parentIssueId: values.parentIssueId ?? null,
     parentUpdatedAt: values.parentUpdatedAt ?? null,
@@ -402,7 +473,7 @@ export function project(
   workspaceKey: string,
   values: Pick<ProjectSnapshot, "id" | "url" | "name" | "statusName">
     & Partial<ProjectSnapshot>
-    & Partial<Pick<LinearProject, "externalLinks">>,
+    & Partial<Pick<LinearProject, "externalLinks" | "resources">>,
 ): LinearProject {
   return {
     id: values.id,
@@ -421,6 +492,7 @@ export function project(
     labelNames: values.labelNames ?? [],
     updatedAt: values.updatedAt ?? "2026-01-01T00:00:00.000Z",
     externalLinks: values.externalLinks ?? [],
+    resources: values.resources ?? [],
   };
 }
 
