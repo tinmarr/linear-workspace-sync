@@ -1351,6 +1351,172 @@ describe("reconciliation", () => {
     state.close();
   });
 
+  it("copies issue resources while keeping the association link personal-only", async () => {
+    const { personal, work, state, engine } = setup();
+    personal.issues.set("personal-1", issue("personal", {
+      id: "personal-1",
+      identifier: "PER-1",
+      url: "https://linear.app/personal/issue/PER-1",
+      title: "Personal task",
+      statusName: "Todo",
+      labelNames: ["sync:work"],
+      resources: [{ id: "personal-resource", url: "https://docs.example.com/task", title: "Task docs" }],
+    }));
+
+    await engine.run(true);
+
+    const externalIssue = [...work.issues.values()][0];
+    expect(externalIssue.resources).toEqual([{
+      id: expect.any(String),
+      url: "https://docs.example.com/task",
+      title: "Task docs",
+    }]);
+    expect(personal.issues.get("personal-1")?.externalLinks).toEqual([{
+      workspaceKey: "work",
+      issueId: externalIssue.identifier,
+      issueUrl: externalIssue.url,
+    }]);
+    expect(externalIssue.externalLinks).toEqual([]);
+    state.close();
+  });
+
+  it("copies inbound issue resources to the personal representation", async () => {
+    const { personal, work, state, engine } = setup();
+    work.issues.set("work-1", issue("work", {
+      id: "work-1",
+      identifier: "WORK-1",
+      url: "https://linear.app/work/issue/WORK-1",
+      title: "External task",
+      statusName: "Todo",
+      assigneeEmail: "me@example.com",
+      resources: [{ id: "work-resource", url: "https://figma.example.com/file", title: "Design" }],
+    }));
+
+    await engine.run(true);
+
+    const personalIssue = [...personal.issues.values()][0];
+    expect(personalIssue.resources).toEqual([{
+      id: expect.any(String),
+      url: "https://figma.example.com/file",
+      title: "Design",
+    }]);
+    expect(personalIssue.externalLinks).toHaveLength(1);
+    expect(work.issues.get("work-1")?.resources).toEqual([{
+      id: "work-resource",
+      url: "https://figma.example.com/file",
+      title: "Design",
+    }]);
+    state.close();
+  });
+
+  it("propagates issue resource removals and flags simultaneous resource edits", async () => {
+    const { personal, work, state, engine } = setup();
+    personal.issues.set("personal-1", issue("personal", {
+      id: "personal-1",
+      identifier: "PER-1",
+      url: "https://linear.app/personal/issue/PER-1",
+      title: "Personal task",
+      statusName: "Todo",
+      labelNames: ["sync:work"],
+      resources: [{ id: "personal-resource", url: "https://docs.example.com/task", title: "Task docs" }],
+    }));
+
+    await engine.run(true);
+    personal.issues.get("personal-1")!.resources = [];
+    await engine.run(false);
+    expect([...work.issues.values()][0].resources).toEqual([]);
+
+    personal.issues.get("personal-1")!.resources.push({
+      id: "personal-resource-2",
+      url: "https://personal.example.com/task",
+      title: "Personal resource",
+    });
+    [...work.issues.values()][0].resources.push({
+      id: "work-resource-2",
+      url: "https://work.example.com/task",
+      title: "External resource",
+    });
+    await engine.run(false);
+
+    expect(personal.issues.get("personal-1")?.resources).toEqual([expect.objectContaining({
+      url: "https://personal.example.com/task",
+    })]);
+    expect([...work.issues.values()][0].resources).toEqual([expect.objectContaining({
+      url: "https://work.example.com/task",
+    })]);
+    expect(personal.issues.get("personal-1")?.labelNames).toContain("sync:conflict");
+    expect(personal.comments).toHaveLength(1);
+    state.close();
+  });
+
+  it("copies project resources to a newly created external project", async () => {
+    const { personal, work, state, engine } = setup();
+    personal.projects.set("personal-project", project("personal", {
+      id: "personal-project",
+      url: "https://linear.app/personal/project/personal-project",
+      name: "Personal project",
+      statusName: "Backlog",
+      labelNames: ["sync:work"],
+      resources: [{ id: "personal-resource", url: "https://notion.example.com/project", title: "Project notes" }],
+    }));
+
+    await engine.run(true);
+
+    expect([...work.projects.values()][0].resources).toEqual([{
+      id: expect.any(String),
+      url: "https://notion.example.com/project",
+      title: "Project notes",
+    }]);
+    expect(personal.projects.get("personal-project")?.externalLinks).toHaveLength(1);
+    expect([...work.projects.values()][0].externalLinks).toEqual([]);
+    state.close();
+  });
+
+  it("synchronizes mapped project resource changes in both directions", async () => {
+    const { personal, work, state, engine } = setup();
+    personal.projects.set("personal-project", project("personal", {
+      id: "personal-project",
+      url: "https://linear.app/personal/project/personal-project",
+      name: "Shared project",
+      statusName: "Backlog",
+      externalLinks: [{
+        workspaceKey: "work",
+        projectId: "work-project",
+        projectUrl: "https://linear.app/work/project/work-project",
+      }],
+    }));
+    work.projects.set("work-project", project("work", {
+      id: "work-project",
+      url: "https://linear.app/work/project/work-project",
+      name: "Shared project",
+      statusName: "Backlog",
+    }));
+
+    await engine.run(true);
+    personal.projects.get("personal-project")!.resources.push({
+      id: "personal-resource",
+      url: "https://docs.example.com/project",
+      title: "Project docs",
+    });
+    await engine.run(false);
+    expect(work.projects.get("work-project")?.resources).toEqual([expect.objectContaining({
+      url: "https://docs.example.com/project",
+      title: "Project docs",
+    })]);
+
+    work.projects.get("work-project")!.resources[0].title = "Updated project docs";
+    await engine.run(false);
+    expect(personal.projects.get("personal-project")?.resources).toEqual([expect.objectContaining({
+      url: "https://docs.example.com/project",
+      title: "Updated project docs",
+    })]);
+
+    personal.projects.get("personal-project")!.resources = [];
+    await engine.run(false);
+    expect(work.projects.get("work-project")?.resources).toEqual([]);
+    state.close();
+  });
+
   it("uses a personal link before routing labels or issue creation", async () => {
     const { personal, work, state, engine } = setup();
     work.issues.set("work-1", issue("work", {

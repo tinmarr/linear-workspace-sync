@@ -12,6 +12,11 @@ import { logEvent } from "./log.js";
 import { issueMappingKey, projectMappingKey } from "./keys.js";
 import { RelationshipSynchronizer } from "./relationship-sync.js";
 import {
+  copyResources,
+  resourceSnapshots,
+  resourceSyncDirection,
+} from "./resource-sync.js";
+import {
   ProjectSynchronizer,
   type ProjectSyncContext,
   type ProjectSyncResult,
@@ -553,9 +558,16 @@ export class ReconciliationEngine {
       );
     }
     let broken = statusErrors.length;
+    const resourceDirection = resourceSyncDirection(
+      personalIssue.resources,
+      externalIssue.resources,
+      previous?.resources,
+      created,
+    );
     if (!previous || created) {
-      this.state.putSnapshot(currentPersonal, pair.externalConfig.key);
-      this.state.putSnapshot(currentExternal, pair.externalConfig.key);
+      await this.syncIssueResources(personalIssue, externalIssue, resourceDirection, pair.external);
+      this.state.putSnapshot(this.toSnapshot(externalIssue), pair.externalConfig.key);
+      this.state.putSnapshot(this.toSnapshot(personalIssue), pair.externalConfig.key);
       processedMappingKeys.add(issueMappingKey(pair.externalConfig.key, externalIssue.id));
       return { conflicts: 0, broken };
     }
@@ -564,8 +576,11 @@ export class ReconciliationEngine {
       this.changedOnBothSides(field, previous, currentPersonal, currentExternal)
       && !this.valuesConverged(field, currentPersonal, currentExternal, pair.externalConfig),
     );
-    if (conflicts.length > 0) {
-      await this.markConflict(personalIssue, pair.externalConfig.key, conflicts);
+    const allConflicts = resourceDirection === "conflict"
+      ? [...conflicts, "resources"]
+      : conflicts;
+    if (allConflicts.length > 0) {
+      await this.markConflict(personalIssue, pair.externalConfig.key, allConflicts);
       processedMappingKeys.add(issueMappingKey(pair.externalConfig.key, externalIssue.id));
       return { conflicts: 1, broken: 0 };
     }
@@ -605,6 +620,7 @@ export class ReconciliationEngine {
     if (Object.keys(personalChanges).length > 0) {
       Object.assign(finalPersonal, await this.personal.updateIssue(personalIssue.id, personalChanges));
     }
+    await this.syncIssueResources(finalPersonal, finalExternal, resourceDirection, pair.external);
     this.state.putSnapshot(this.toSnapshot(finalPersonal), pair.externalConfig.key);
     this.state.putSnapshot(this.toSnapshot(finalExternal), pair.externalConfig.key);
     this.state.clearConflict(personalIssue.id, pair.externalConfig.key);
@@ -624,6 +640,27 @@ export class ReconciliationEngine {
     }
     await this.personal.removeLabel(personalIssue.id, label);
     personalIssue.labelNames = personalIssue.labelNames.filter((name) => name !== label);
+  }
+
+  private async syncIssueResources(
+    personalIssue: LinearIssue,
+    externalIssue: LinearIssue,
+    direction: ReturnType<typeof resourceSyncDirection>,
+    externalWorkspace: LinearWorkspace,
+  ): Promise<void> {
+    if (direction === "personal-to-external") {
+      await copyResources(personalIssue.resources, externalIssue.resources, {
+        add: (resource) => externalWorkspace.addIssueResource(externalIssue.id, resource.url, resource.title),
+        update: (resource, desired) => externalWorkspace.updateIssueResource(resource.id, desired.title),
+        remove: (resource) => externalWorkspace.removeIssueResource(resource.id),
+      });
+    } else if (direction === "external-to-personal") {
+      await copyResources(externalIssue.resources, personalIssue.resources, {
+        add: (resource) => this.personal.addIssueResource(personalIssue.id, resource.url, resource.title),
+        update: (resource, desired) => this.personal.updateIssueResource(resource.id, desired.title),
+        remove: (resource) => this.personal.removeIssueResource(resource.id),
+      });
+    }
   }
 
   private async addPersonalLabelIfMissing(personalIssue: LinearIssue, label: string): Promise<void> {
@@ -974,6 +1011,7 @@ export class ReconciliationEngine {
       labelNames: issue.labelNames,
       projectId: issue.projectId,
       projectMilestoneId: issue.projectMilestoneId,
+      resources: resourceSnapshots(issue.resources),
     };
   }
 
@@ -999,6 +1037,7 @@ export class ReconciliationEngine {
           includeArchived: false,
           includeLabels: false,
           includeExternalLinks: false,
+          includeResources: true,
           excludeCompleted: initial,
         });
         this.state.clearFailure(`workspace:${pair.externalConfig.key}`, "__list__");

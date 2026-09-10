@@ -19,6 +19,11 @@ import type {
 import { logEvent } from "./log.js";
 import { projectMappingKey } from "./keys.js";
 import { MilestoneSynchronizer } from "./milestone-sync.js";
+import {
+  copyResources,
+  resourceSnapshots,
+  resourceSyncDirection,
+} from "./resource-sync.js";
 import { SyncState } from "./state.js";
 
 export type ProjectSyncResult = {
@@ -312,9 +317,16 @@ export class ProjectSynchronizer {
     const currentPersonal = this.toSnapshot(personalProject);
     const currentExternal = this.toSnapshot(externalProject);
     const previous = this.state.getProjectSnapshot(personalProject.id, pair.externalConfig.key);
+    const resourceDirection = resourceSyncDirection(
+      personalProject.resources,
+      externalProject.resources,
+      previous?.resources,
+      created,
+    );
     if (!previous || created) {
-      this.state.putProjectSnapshot(currentPersonal, pair.externalConfig.key);
+      await this.syncProjectResources(personalProject, externalProject, resourceDirection, pair.external);
       this.state.putProjectSnapshot(currentExternal, pair.externalConfig.key);
+      this.state.putProjectSnapshot(this.toSnapshot(personalProject), pair.externalConfig.key);
       processedMappingKeys.add(processedKey);
       return result;
     }
@@ -334,8 +346,11 @@ export class ProjectSynchronizer {
       this.changedOnBothSides(field, previous, currentPersonal, currentExternal)
       && !this.projectValuesConverged(field, currentPersonal, currentExternal),
     );
-    if (conflicts.length > 0) {
-      await this.markProjectConflict(personalProject, pair.externalConfig.key, conflicts);
+    const allConflicts = resourceDirection === "conflict"
+      ? [...conflicts, "resources"]
+      : conflicts;
+    if (allConflicts.length > 0) {
+      await this.markProjectConflict(personalProject, pair.externalConfig.key, allConflicts);
       processedMappingKeys.add(processedKey);
       result.conflicts++;
       return result;
@@ -368,6 +383,7 @@ export class ProjectSynchronizer {
     }
     if (Object.keys(externalChanges).length > 0) Object.assign(externalProject, await pair.external.updateProject(externalProject.id, externalChanges));
     if (Object.keys(personalChanges).length > 0) Object.assign(personalProject, await this.personal.updateProject(personalProject.id, personalChanges));
+    await this.syncProjectResources(personalProject, externalProject, resourceDirection, pair.external);
     this.state.putProjectSnapshot(this.toSnapshot(personalProject), pair.externalConfig.key);
     this.state.putProjectSnapshot(this.toSnapshot(externalProject), pair.externalConfig.key);
     if (result.conflicts === 0) {
@@ -687,7 +703,29 @@ export class ProjectSynchronizer {
       archived: project.archived,
       labelNames: project.labelNames,
       updatedAt: project.updatedAt,
+      resources: resourceSnapshots(project.resources),
     };
+  }
+
+  private async syncProjectResources(
+    personalProject: LinearProject,
+    externalProject: LinearProject,
+    direction: ReturnType<typeof resourceSyncDirection>,
+    externalWorkspace: LinearWorkspace,
+  ): Promise<void> {
+    if (direction === "personal-to-external") {
+      await copyResources(personalProject.resources, externalProject.resources, {
+        add: (resource) => externalWorkspace.addProjectResource(externalProject.id, resource.url, resource.title),
+        update: (resource, desired) => externalWorkspace.updateProjectResource(resource.id, desired.title),
+        remove: (resource) => externalWorkspace.removeProjectResource(resource.id),
+      });
+    } else if (direction === "external-to-personal") {
+      await copyResources(externalProject.resources, personalProject.resources, {
+        add: (resource) => this.personal.addProjectResource(personalProject.id, resource.url, resource.title),
+        update: (resource, desired) => this.personal.updateProjectResource(resource.id, desired.title),
+        remove: (resource) => this.personal.removeProjectResource(resource.id),
+      });
+    }
   }
 
   private toMapping(

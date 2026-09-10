@@ -95,6 +95,12 @@ export type IssueSnapshot = {
   labelNames: string[];
   projectId: string | null;
   projectMilestoneId: string | null;
+  resources?: ResourceSnapshot[];
+};
+
+export type ResourceSnapshot = {
+  url: string;
+  title: string;
 };
 
 export type ProjectStatus = {
@@ -118,6 +124,7 @@ export type ProjectSnapshot = {
   archived: boolean;
   labelNames: string[];
   updatedAt: string;
+  resources?: ResourceSnapshot[];
 };
 
 export type MilestoneSnapshot = {
