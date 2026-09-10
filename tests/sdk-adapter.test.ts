@@ -145,10 +145,18 @@ describe("SDK issue hydration", () => {
     const createInputs: unknown[] = [];
     const updateInputs: unknown[] = [];
     const deletedIds: string[] = [];
+    let projectQueries = 0;
+    let milestoneQueries = 0;
     const client = {
-      project: async () => ({
-        projectMilestones: async () => connection([milestone]),
-      }),
+      project: async () => {
+        projectQueries++;
+        return {
+          projectMilestones: async () => {
+            milestoneQueries++;
+            return connection([milestone]);
+          },
+        };
+      },
       projectMilestone: async () => milestone,
       createProjectMilestone: async (input: unknown) => {
         createInputs.push(input);
@@ -178,6 +186,11 @@ describe("SDK issue hydration", () => {
       targetDate: "2026-02-01",
       sortOrder: 2,
     })]);
+    await expect(workspace.listProjectMilestones("project-1")).resolves.toEqual([expect.objectContaining({
+      id: "milestone-1",
+    })]);
+    expect(projectQueries).toBe(1);
+    expect(milestoneQueries).toBe(1);
     await expect(workspace.getProjectMilestone("milestone-1")).resolves.toEqual(expect.objectContaining({
       name: "Launch",
     }));
@@ -305,6 +318,10 @@ describe("SDK issue hydration", () => {
       createdAt: new Date("2026-01-04T00:00:00.000Z"),
       updatedAt: new Date("2026-01-04T00:00:00.000Z"),
     };
+    let issueQueries = 0;
+    let relationQueries = 0;
+    let inverseRelationQueries = 0;
+    let historyQueries = 0;
     const sourceIssue = {
       id: "personal-1",
       identifier: "PER-1",
@@ -321,14 +338,23 @@ describe("SDK issue hydration", () => {
       assigneeId: null,
       updatedAt: new Date("2026-01-04T00:00:00.000Z"),
       parentId: "personal-parent",
-      relations: async () => connection([relation]),
-      inverseRelations: async () => connection([relation, inverseRelation]),
-      history: async () => connection([{
-        updatedAt: new Date("2026-01-03T00:00:00.000Z"),
-        fromParentId: null,
-        toParentId: "personal-parent",
-        relationChanges: [{ type: "removed", identifier: "PER-3" }],
-      }]),
+      relations: async () => {
+        relationQueries++;
+        return connection([relation]);
+      },
+      inverseRelations: async () => {
+        inverseRelationQueries++;
+        return connection([relation, inverseRelation]);
+      },
+      history: async () => {
+        historyQueries++;
+        return connection([{
+          updatedAt: new Date("2026-01-03T00:00:00.000Z"),
+          fromParentId: null,
+          toParentId: "personal-parent",
+          relationChanges: [{ type: "removed", identifier: "PER-3" }],
+        }]);
+      },
     };
     const createdInputs: unknown[] = [];
     const deletedIds: string[] = [];
@@ -339,7 +365,10 @@ describe("SDK issue hydration", () => {
       labels: async () => connection([]),
     };
     const client = {
-      issue: async () => sourceIssue,
+      issue: async () => {
+        issueQueries++;
+        return sourceIssue;
+      },
       teams: async () => connection([team]),
       issueLabels: async () => connection([]),
       attachments: async () => connection([]),
@@ -362,6 +391,7 @@ describe("SDK issue hydration", () => {
     );
 
     const hydrated = await workspace.getIssue("PER-1", false, true);
+    const hydratedAgain = await workspace.getIssue("PER-1", false, true);
     const created = await workspace.createIssueRelation({
       issueId: "personal-1",
       relatedIssueId: "personal-4",
@@ -379,6 +409,11 @@ describe("SDK issue hydration", () => {
       action: "removed",
       updatedAt: "2026-01-03T00:00:00.000Z",
     }]);
+    expect(hydratedAgain).toBe(hydrated);
+    expect(issueQueries).toBe(1);
+    expect(relationQueries).toBe(1);
+    expect(inverseRelationQueries).toBe(1);
+    expect(historyQueries).toBe(1);
     expect(created).toEqual(expect.objectContaining({ id: "relation-3", type: "duplicate" }));
     expect(createdInputs).toEqual([{
       issueId: "personal-1",

@@ -1,5 +1,6 @@
 import type { LinearIssue, LinearWorkspace } from "./linear.js";
 import type { IssueRelationSnapshot, MappingRecord } from "./domain.js";
+import { relationshipKey } from "./keys.js";
 import { logEvent } from "./log.js";
 import { SyncState } from "./state.js";
 
@@ -38,6 +39,20 @@ export class RelationshipSynchronizer {
     await this.syncNativeRelations(mappedIssues, personalById, externalById, errors);
     await this.syncParents(mappedIssues, personalById, externalById, errors);
     if (errors.length > 0) throw errors[0];
+    for (const item of mappedIssues) {
+      this.state.putRelationshipEndpointState({
+        externalWorkspaceKey: this.externalWorkspaceKey,
+        side: "personal",
+        issueId: item.personal.id,
+        issueUpdatedAt: item.personal.updatedAt,
+      });
+      this.state.putRelationshipEndpointState({
+        externalWorkspaceKey: this.externalWorkspaceKey,
+        side: "external",
+        issueId: item.external.id,
+        issueUpdatedAt: item.external.updatedAt,
+      });
+    }
   }
 
   private async loadMappedIssues(
@@ -45,22 +60,73 @@ export class RelationshipSynchronizer {
     externalIssues: Map<string, LinearIssue>,
     errors: unknown[],
   ): Promise<MappedIssue[]> {
-    const mapped: MappedIssue[] = [];
+    const candidates: MappedIssue[] = [];
     for (const mapping of this.state.listMappings()) {
       if (!mapping.active || mapping.externalWorkspaceKey !== this.externalWorkspaceKey) continue;
       try {
-        const personal = await this.personal.getIssue(mapping.personalIssueId, true, true)
-          ?? personalIssues.get(mapping.personalIssueId);
-        const external = await this.external.getIssue(mapping.externalIssueId, true, true)
-          ?? externalIssues.get(mapping.externalIssueId);
+        const personal = personalIssues.get(mapping.personalIssueId)
+          ?? await this.personal.getIssue(mapping.personalIssueId, true);
+        const external = externalIssues.get(mapping.externalIssueId)
+          ?? await this.external.getIssue(mapping.externalIssueId, true);
         if (!personal || personal.archived || !external || external.archived) continue;
-        mapped.push({ mapping, personal, external });
+        candidates.push({ mapping, personal, external });
       } catch (error: unknown) {
         errors.push(error);
         this.recordFailure(mapping.personalIssueId, error);
       }
     }
+    const needsRefresh = candidates.some((item) =>
+      this.shouldRefresh(item.personal, "personal")
+      || this.shouldRefresh(item.external, "external"),
+    );
+    if (!needsRefresh) {
+      logEvent("relationship_sync_skipped", {
+        workspace: this.externalWorkspaceKey,
+        mappedIssues: candidates.length,
+        reason: "issue_versions_unchanged",
+      });
+      return [];
+    }
+
+    const mapped: MappedIssue[] = [];
+    for (const candidate of candidates) {
+      try {
+        const personal = await this.hydrateIssue(
+          this.personal,
+          candidate.personal,
+          this.shouldRefresh(candidate.personal, "personal"),
+        );
+        const external = await this.hydrateIssue(
+          this.external,
+          candidate.external,
+          this.shouldRefresh(candidate.external, "external"),
+        );
+        if (!personal || personal.archived || !external || external.archived) continue;
+        mapped.push({ mapping: candidate.mapping, personal, external });
+      } catch (error: unknown) {
+        errors.push(error);
+        this.recordFailure(candidate.mapping.personalIssueId, error);
+      }
+    }
     return mapped;
+  }
+
+  private endpointIsCurrent(side: "personal" | "external", issue: LinearIssue): boolean {
+    return this.state.getRelationshipEndpointState(this.externalWorkspaceKey, side, issue.id)?.issueUpdatedAt
+      === issue.updatedAt;
+  }
+
+  private shouldRefresh(issue: LinearIssue, side: "personal" | "external"): boolean {
+    return Boolean(issue.relationshipsLoaded) || !this.endpointIsCurrent(side, issue);
+  }
+
+  private async hydrateIssue(
+    workspace: LinearWorkspace,
+    issue: LinearIssue,
+    refresh: boolean,
+  ): Promise<LinearIssue | null> {
+    if (!refresh || issue.relationshipsLoaded) return issue;
+    return workspace.getIssue(issue.id, true, true);
   }
 
   private async syncNativeRelations(
@@ -71,11 +137,11 @@ export class RelationshipSynchronizer {
   ): Promise<void> {
     const entries = new Map<string, RelationEntry>();
     for (const item of mappedIssues) {
-      for (const relation of item.personal.relations) {
+      for (const relation of item.personal.relationshipsLoaded ? item.personal.relations : []) {
         const source = personalById.get(relation.issueId);
         const related = personalById.get(relation.relatedIssueId);
         if (!source || !related) continue;
-        const key = this.relationKey(source.personal.id, related.personal.id, relation.type);
+        const key = relationshipKey(source.personal.id, related.personal.id, relation.type);
         const entry = entries.get(key) ?? {
           personalIssueId: source.personal.id,
           personalRelatedIssueId: related.personal.id,
@@ -84,11 +150,11 @@ export class RelationshipSynchronizer {
         entry.personal = relation;
         entries.set(key, entry);
       }
-      for (const relation of item.external.relations) {
+      for (const relation of item.external.relationshipsLoaded ? item.external.relations : []) {
         const source = externalById.get(relation.issueId);
         const related = externalById.get(relation.relatedIssueId);
         if (!source || !related) continue;
-        const key = this.relationKey(source.personal.id, related.personal.id, relation.type);
+        const key = relationshipKey(source.personal.id, related.personal.id, relation.type);
         const entry = entries.get(key) ?? {
           personalIssueId: source.personal.id,
           personalRelatedIssueId: related.personal.id,
@@ -99,7 +165,7 @@ export class RelationshipSynchronizer {
       }
     }
     for (const snapshot of this.state.listRelationshipStates(this.externalWorkspaceKey)) {
-      const key = this.relationKey(snapshot.personalIssueId, snapshot.personalRelatedIssueId, snapshot.relationType);
+      const key = relationshipKey(snapshot.personalIssueId, snapshot.personalRelatedIssueId, snapshot.relationType);
       if (!entries.has(key) && personalById.has(snapshot.personalIssueId) && personalById.has(snapshot.personalRelatedIssueId)) {
         entries.set(key, {
           personalIssueId: snapshot.personalIssueId,
@@ -110,7 +176,7 @@ export class RelationshipSynchronizer {
     }
 
     for (const entry of entries.values()) {
-      const failureId = this.relationKey(entry.personalIssueId, entry.personalRelatedIssueId, entry.relationType);
+      const failureId = relationshipKey(entry.personalIssueId, entry.personalRelatedIssueId, entry.relationType);
       try {
         await this.syncNativeRelation(entry, personalById, externalById);
         this.state.clearFailure(this.failureScope(), failureId);
@@ -136,12 +202,28 @@ export class RelationshipSynchronizer {
       entry.personalRelatedIssueId,
       entry.relationType,
     );
-    let personalPresent = Boolean(entry.personal);
-    let externalPresent = Boolean(entry.external);
-    let personalUpdatedAt = entry.personal?.updatedAt
-      ?? this.missingRelationTimestamp(personalSource.personal, personalTarget.personal);
-    let externalUpdatedAt = entry.external?.updatedAt
-      ?? this.missingRelationTimestamp(externalSource.external, externalTarget.external);
+    const personalLoaded = Boolean(personalSource.personal.relationshipsLoaded);
+    const externalLoaded = Boolean(externalSource.external.relationshipsLoaded);
+    let personalPresent = personalLoaded
+      ? Boolean(entry.personal)
+      : previous?.personalPresent ?? false;
+    let externalPresent = externalLoaded
+      ? Boolean(entry.external)
+      : previous?.externalPresent ?? false;
+    let personalUpdatedAt = personalLoaded
+      ? entry.personal?.updatedAt
+        ?? this.missingRelationTimestamp(personalSource.personal, personalTarget.personal)
+      : previous?.personalUpdatedAt ?? null;
+    let externalUpdatedAt = externalLoaded
+      ? entry.external?.updatedAt
+        ?? this.missingRelationTimestamp(externalSource.external, externalTarget.external)
+      : previous?.externalUpdatedAt ?? null;
+    let personalRelationId = personalLoaded
+      ? entry.personal?.id ?? null
+      : previous?.personalRelationId ?? null;
+    let externalRelationId = externalLoaded
+      ? entry.external?.id ?? null
+      : previous?.externalRelationId ?? null;
     let personalManaged = previous?.personalManaged ?? false;
     let externalManaged = previous?.externalManaged ?? false;
 
@@ -176,14 +258,23 @@ export class RelationshipSynchronizer {
         });
         externalPresent = true;
         externalUpdatedAt = created.updatedAt;
+        externalRelationId = created.id;
         externalManaged = true;
         externalSource.external.relations.push(created);
-      } else if (!personalPresent && externalPresent && externalManaged && entry.external) {
-        await this.external.deleteIssueRelation(entry.external.id);
+      } else if (!personalPresent && externalPresent && externalManaged) {
+        const relationId = await this.relationIdForDeletion(
+          this.external,
+          externalSource.external,
+          externalTarget.external,
+          entry.relationType,
+          externalRelationId,
+        );
+        if (relationId) await this.external.deleteIssueRelation(relationId);
         externalPresent = false;
         externalUpdatedAt = externalSource.external.updatedAt;
+        externalRelationId = null;
         externalManaged = false;
-        externalSource.external.relations = externalSource.external.relations.filter((relation) => relation.id !== entry.external!.id);
+        externalSource.external.relations = externalSource.external.relations.filter((relation) => relation.id !== relationId);
       }
     } else if (winner === "external" && personalPresent !== externalPresent) {
       if (externalPresent && !personalPresent) {
@@ -194,14 +285,23 @@ export class RelationshipSynchronizer {
         });
         personalPresent = true;
         personalUpdatedAt = created.updatedAt;
+        personalRelationId = created.id;
         personalManaged = true;
         personalSource.personal.relations.push(created);
-      } else if (!externalPresent && personalPresent && personalManaged && entry.personal) {
-        await this.personal.deleteIssueRelation(entry.personal.id);
+      } else if (!externalPresent && personalPresent && personalManaged) {
+        const relationId = await this.relationIdForDeletion(
+          this.personal,
+          personalSource.personal,
+          personalTarget.personal,
+          entry.relationType,
+          personalRelationId,
+        );
+        if (relationId) await this.personal.deleteIssueRelation(relationId);
         personalPresent = false;
         personalUpdatedAt = personalSource.personal.updatedAt;
+        personalRelationId = null;
         personalManaged = false;
-        personalSource.personal.relations = personalSource.personal.relations.filter((relation) => relation.id !== entry.personal!.id);
+        personalSource.personal.relations = personalSource.personal.relations.filter((relation) => relation.id !== relationId);
       }
     }
 
@@ -214,6 +314,8 @@ export class RelationshipSynchronizer {
       externalPresent,
       personalUpdatedAt,
       externalUpdatedAt,
+      personalRelationId: personalRelationId ?? undefined,
+      externalRelationId: externalRelationId ?? undefined,
       personalManaged,
       externalManaged,
     });
@@ -227,21 +329,31 @@ export class RelationshipSynchronizer {
   ): Promise<void> {
     for (const child of mappedIssues) {
       try {
-        const personalParent = child.personal.parentIssueId
-          ? personalById.get(child.personal.parentIssueId)
+        const previous = this.state.getParentState(this.externalWorkspaceKey, child.personal.id);
+        const personalParentIssueId = child.personal.relationshipsLoaded
+          ? child.personal.parentIssueId
+          : previous?.personalParentIssueId ?? null;
+        const externalParentIssueId = child.external.relationshipsLoaded
+          ? child.external.parentIssueId
+          : previous?.externalParentIssueId ?? null;
+        const personalParent = personalParentIssueId
+          ? personalById.get(personalParentIssueId)
           : undefined;
-        const externalParent = child.external.parentIssueId
-          ? externalById.get(child.external.parentIssueId)
+        const externalParent = externalParentIssueId
+          ? externalById.get(externalParentIssueId)
           : undefined;
-        if ((child.personal.parentIssueId && !personalParent) || (child.external.parentIssueId && !externalParent)) {
+        if ((personalParentIssueId && !personalParent) || (externalParentIssueId && !externalParent)) {
           continue;
         }
-        const personalParentId = personalParent?.personal.id ?? null;
-        const externalParentId = externalParent?.mapping.externalIssueId ?? null;
+        let personalParentId = personalParent?.personal.id ?? null;
+        let externalParentId = externalParent?.mapping.externalIssueId ?? null;
         const externalParentPersonalId = externalParent?.mapping.personalIssueId ?? null;
-        const previous = this.state.getParentState(this.externalWorkspaceKey, child.personal.id);
-        const personalUpdatedAt = child.personal.parentUpdatedAt;
-        const externalUpdatedAt = child.external.parentUpdatedAt;
+        let personalUpdatedAt = child.personal.relationshipsLoaded
+          ? child.personal.parentUpdatedAt
+          : previous?.personalUpdatedAt ?? null;
+        let externalUpdatedAt = child.external.relationshipsLoaded
+          ? child.external.parentUpdatedAt
+          : previous?.externalUpdatedAt ?? null;
         const personalChanged = previous
           ? this.parentChanged(personalParentId, personalUpdatedAt, previous.personalParentIssueId, previous.personalUpdatedAt)
           : false;
@@ -288,6 +400,8 @@ export class RelationshipSynchronizer {
             parentIssueId: desiredPersonalParentId,
           });
           Object.assign(child.personal, updated);
+          personalParentId = desiredPersonalParentId;
+          personalUpdatedAt = updated.parentUpdatedAt ?? updated.updatedAt;
           personalManaged = desiredPersonalParentId !== null;
         }
         if (winner && desiredExternalParentId !== externalParentId
@@ -296,18 +410,18 @@ export class RelationshipSynchronizer {
             parentIssueId: desiredExternalParentId,
           });
           Object.assign(child.external, updated);
+          externalParentId = desiredExternalParentId;
+          externalUpdatedAt = updated.parentUpdatedAt ?? updated.updatedAt;
           externalManaged = desiredExternalParentId !== null;
         }
 
         this.state.putParentState({
           externalWorkspaceKey: this.externalWorkspaceKey,
           personalIssueId: child.personal.id,
-          personalParentIssueId: child.personal.parentIssueId
-            ? personalById.get(child.personal.parentIssueId)?.personal.id ?? null
-            : null,
-          externalParentIssueId: child.external.parentIssueId,
-          personalUpdatedAt: child.personal.parentUpdatedAt,
-          externalUpdatedAt: child.external.parentUpdatedAt,
+          personalParentIssueId: personalParentId,
+          externalParentIssueId: externalParentId,
+          personalUpdatedAt,
+          externalUpdatedAt,
           personalManaged,
           externalManaged,
         });
@@ -333,10 +447,6 @@ export class RelationshipSynchronizer {
       count,
       error: message,
     });
-  }
-
-  private relationKey(personalIssueId: string, personalRelatedIssueId: string, relationType: string): string {
-    return `${personalIssueId}\u0000${personalRelatedIssueId}\u0000${relationType}`;
   }
 
   private changed(
@@ -372,5 +482,21 @@ export class RelationshipSynchronizer {
       ...target.relationChanges.filter((change) => change.action === "removed" && change.relatedIdentifier === source.identifier),
     ];
     return changes.map((change) => change.updatedAt).sort().at(-1) ?? source.updatedAt;
+  }
+
+  private async relationIdForDeletion(
+    workspace: LinearWorkspace,
+    source: LinearIssue,
+    target: LinearIssue,
+    relationType: string,
+    knownId: string | null,
+  ): Promise<string | undefined> {
+    if (knownId) return knownId;
+    const hydrated = await workspace.getIssue(source.id, true, true);
+    return hydrated?.relations.find((relation) =>
+      relation.issueId === source.id
+      && relation.relatedIssueId === target.id
+      && relation.type === relationType,
+    )?.id;
   }
 }

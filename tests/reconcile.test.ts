@@ -170,6 +170,266 @@ describe("reconciliation", () => {
     state.close();
   });
 
+  it("enumerates a mapped project's milestones once despite multiple issue triggers", async () => {
+    const { personal, work, state, engine } = setup();
+    personal.projects.set("personal-project", project("personal", {
+      id: "personal-project",
+      url: "https://linear.app/personal/project/personal-project",
+      name: "Shared project",
+      statusName: "Backlog",
+      externalLinks: [{
+        workspaceKey: "work",
+        projectId: "work-project",
+        projectUrl: "https://linear.app/work/project/work-project",
+      }],
+    }));
+    work.projects.set("work-project", project("work", {
+      id: "work-project",
+      url: "https://linear.app/work/project/work-project",
+      name: "Shared project",
+      statusName: "Backlog",
+    }));
+    for (const [index, ids] of [
+      ["personal-1", "work-1"],
+      ["personal-2", "work-2"],
+    ].entries()) {
+      personal.issues.set(ids[0], issue("personal", {
+        id: ids[0],
+        identifier: `PER-${index + 1}`,
+        url: `https://linear.app/personal/issue/PER-${index + 1}`,
+        title: `Task ${index + 1}`,
+        statusName: "Todo",
+        externalLinks: [{
+          workspaceKey: "work",
+          issueId: ids[1],
+          issueUrl: `https://linear.app/work/issue/WORK-${index + 1}`,
+        }],
+      }));
+      work.issues.set(ids[1], issue("work", {
+        id: ids[1],
+        identifier: `WORK-${index + 1}`,
+        url: `https://linear.app/work/issue/WORK-${index + 1}`,
+        title: `Task ${index + 1}`,
+        statusName: "Todo",
+        assigneeEmail: "me@example.com",
+        projectId: "work-project",
+      }));
+    }
+
+    await engine.run(true);
+
+    expect(personal.listProjectMilestoneCalls).toBe(1);
+    expect(work.listProjectMilestoneCalls).toBe(1);
+    state.close();
+  });
+
+  it("reuses an assigned external issue already loaded during discovery", async () => {
+    const { personal, work, state, engine } = setup();
+    work.issues.set("work-1", issue("work", {
+      id: "work-1",
+      identifier: "WORK-1",
+      url: "https://linear.app/work/issue/WORK-1",
+      title: "Linked task",
+      statusName: "Todo",
+      assigneeEmail: "me@example.com",
+    }));
+    personal.issues.set("personal-1", issue("personal", {
+      id: "personal-1",
+      identifier: "PER-1",
+      url: "https://linear.app/personal/issue/PER-1",
+      title: "Linked task",
+      statusName: "Todo",
+      externalLinks: [{
+        workspaceKey: "work",
+        issueId: "work-1",
+        issueUrl: "https://linear.app/work/issue/WORK-1",
+      }],
+    }));
+
+    await engine.run(true);
+
+    expect(work.nonRelationshipIssueCalls).toBe(0);
+    state.close();
+  });
+
+  it("does not hydrate unchanged relationship endpoints on the next run", async () => {
+    const { personal, work, state, engine } = setup();
+    work.issues.set("work-1", issue("work", {
+      id: "work-1",
+      identifier: "WORK-1",
+      url: "https://linear.app/work/issue/WORK-1",
+      title: "Mapped task",
+      statusName: "Todo",
+      assigneeEmail: "me@example.com",
+    }));
+    personal.issues.set("personal-1", issue("personal", {
+      id: "personal-1",
+      identifier: "PER-1",
+      url: "https://linear.app/personal/issue/PER-1",
+      title: "Mapped task",
+      statusName: "Todo",
+      externalLinks: [{
+        workspaceKey: "work",
+        issueId: "work-1",
+        issueUrl: "https://linear.app/work/issue/WORK-1",
+      }],
+    }));
+
+    await engine.run(true);
+    const firstRunHydrations = personal.relationshipIssueCalls + work.relationshipIssueCalls;
+    await engine.run(false);
+
+    expect(firstRunHydrations).toBeGreaterThan(0);
+    expect(personal.relationshipIssueCalls + work.relationshipIssueCalls).toBe(firstRunHydrations);
+    state.close();
+  });
+
+  it("hydrates only the relationship endpoint whose issue version changed", async () => {
+    const { personal, work, state, engine } = setup();
+    personal.issues.set("personal-1", issue("personal", {
+      id: "personal-1",
+      identifier: "PER-1",
+      url: "https://linear.app/personal/issue/PER-1",
+      title: "First task",
+      statusName: "Todo",
+      externalLinks: [{
+        workspaceKey: "work",
+        issueId: "work-1",
+        issueUrl: "https://linear.app/work/issue/WORK-1",
+      }],
+      relations: [relation("personal", "personal-1", "personal-2", "blocks")],
+    }));
+    personal.issues.set("personal-2", issue("personal", {
+      id: "personal-2",
+      identifier: "PER-2",
+      url: "https://linear.app/personal/issue/PER-2",
+      title: "Second task",
+      statusName: "Todo",
+      externalLinks: [{
+        workspaceKey: "work",
+        issueId: "work-2",
+        issueUrl: "https://linear.app/work/issue/WORK-2",
+      }],
+    }));
+    work.issues.set("work-1", issue("work", {
+      id: "work-1",
+      identifier: "WORK-1",
+      url: "https://linear.app/work/issue/WORK-1",
+      title: "First task",
+      statusName: "Todo",
+      assigneeEmail: "me@example.com",
+      relations: [relation("work", "work-1", "work-2", "blocks")],
+    }));
+    work.issues.set("work-2", issue("work", {
+      id: "work-2",
+      identifier: "WORK-2",
+      url: "https://linear.app/work/issue/WORK-2",
+      title: "Second task",
+      statusName: "Todo",
+      assigneeEmail: "me@example.com",
+    }));
+
+    await engine.run(true);
+    const personalHydrations = personal.relationshipIssueCalls;
+    const externalHydrations = work.relationshipIssueCalls;
+    const changed = personal.issues.get("personal-1")!;
+    changed.updatedAt = "2026-02-01T00:00:00.000Z";
+    changed.relations[0].updatedAt = changed.updatedAt;
+
+    await engine.run(false);
+
+    expect(personal.relationshipIssueCalls - personalHydrations).toBe(1);
+    expect(work.relationshipIssueCalls - externalHydrations).toBe(0);
+    state.close();
+  });
+
+  it("keeps relationship hydration bounded at the current mapping scale", async () => {
+    const { personal, work, state, engine } = setup();
+    for (let index = 0; index < 52; index++) {
+      const personalId = `personal-${index}`;
+      const externalId = `work-${index}`;
+      personal.issues.set(personalId, issue("personal", {
+        id: personalId,
+        identifier: `PER-${index}`,
+        url: `https://linear.app/personal/issue/PER-${index}`,
+        title: `Task ${index}`,
+        statusName: "Todo",
+        externalLinks: [{
+          workspaceKey: "work",
+          issueId: externalId,
+          issueUrl: `https://linear.app/work/issue/WORK-${index}`,
+        }],
+      }));
+      work.issues.set(externalId, issue("work", {
+        id: externalId,
+        identifier: `WORK-${index}`,
+        url: `https://linear.app/work/issue/WORK-${index}`,
+        title: `Task ${index}`,
+        statusName: "Todo",
+        assigneeEmail: "me@example.com",
+      }));
+    }
+
+    await engine.run(true);
+    const personalHydrations = personal.relationshipIssueCalls;
+    const externalHydrations = work.relationshipIssueCalls;
+    personal.issues.get("personal-0")!.updatedAt = "2026-02-01T00:00:00.000Z";
+
+    await engine.run(false);
+
+    expect(personal.relationshipIssueCalls - personalHydrations).toBe(1);
+    expect(work.relationshipIssueCalls - externalHydrations).toBe(0);
+    state.close();
+  });
+
+  it("clears relationship state when a mapping is deactivated", async () => {
+    const { personal, work, state, engine } = setup();
+    personal.issues.set("personal-1", issue("personal", {
+      id: "personal-1",
+      identifier: "PER-1",
+      url: "https://linear.app/personal/issue/PER-1",
+      title: "Mapped task",
+      statusName: "Todo",
+    }));
+    work.issues.set("work-1", issue("work", {
+      id: "work-1",
+      identifier: "WORK-1",
+      url: "https://linear.app/work/issue/WORK-1",
+      title: "Mapped task",
+      statusName: "Todo",
+    }));
+    const mapping = {
+      personalIssueId: "personal-1",
+      externalWorkspaceKey: "work",
+      externalIssueId: "work-1",
+      personalIssueUrl: "https://linear.app/personal/issue/PER-1",
+      externalIssueUrl: "https://linear.app/work/issue/WORK-1",
+      active: true,
+      conflict: false,
+      broken: false,
+    };
+    state.upsertMapping(mapping);
+    state.putRelationshipEndpointState({
+      externalWorkspaceKey: "work",
+      side: "personal",
+      issueId: "personal-1",
+      issueUpdatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    state.putRelationshipEndpointState({
+      externalWorkspaceKey: "work",
+      side: "external",
+      issueId: "work-1",
+      issueUpdatedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    await engine.run(false);
+
+    expect(state.getMapping("personal-1", "work")?.active).toBe(false);
+    expect(state.getRelationshipEndpointState("work", "personal", "personal-1")).toBeUndefined();
+    expect(state.getRelationshipEndpointState("work", "external", "work-1")).toBeUndefined();
+    state.close();
+  });
+
   it("synchronizes mapped project fields and current-user roles independently", async () => {
     const { personal, work, state, engine } = setup();
     personal.projects.set("personal-project", project("personal", {

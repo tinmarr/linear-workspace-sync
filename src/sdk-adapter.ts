@@ -25,6 +25,7 @@ import type {
   MilestoneUpdate,
 } from "./linear.js";
 import { logEvent } from "./log.js";
+import { projectMilestoneCacheKey } from "./keys.js";
 
 type Connection<T> = {
   nodes: T[];
@@ -121,7 +122,10 @@ export class SdkLinearWorkspace implements LinearWorkspace {
   private readonly userEmailsById = new Map<string, string | null>();
   private readonly userEmailPromises = new Map<string, Promise<string | null>>();
   private readonly issueCache = new Map<string, LinearIssue>();
+  private readonly sdkIssueCache = new Map<string, SdkIssue>();
   private readonly projectCache = new Map<string, LinearProject>();
+  private readonly projectMilestoneCache = new Map<string, LinearMilestone[]>();
+  private readonly projectMilestonePromises = new Map<string, Promise<LinearMilestone[]>>();
   private readonly projectStatusIds = new Map<string, string>();
   private projectStatusCatalog?: Promise<Array<ProjectStatus & { id: string }>>;
   private readonly projectLabelIds = new Map<string, string>();
@@ -176,6 +180,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     };
     const issues = await all(this.client.issues({ filter, includeArchived: false, first: 100 }));
     logEvent("linear_issue_query_received", { workspace: this.config.name, count: issues.length });
+    for (const issue of issues) this.cacheSdkIssue(issue);
     const result = await Promise.all(
       issues
         .filter((issue) => !issue.archivedAt && !issue.trashed)
@@ -203,12 +208,13 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       includeArchived,
     });
     const cached = this.issueCache.get(issueId);
-    if (cached && !includeRelationships && (includeArchived || !cached.archived)) {
+    if (cached && (!includeRelationships || cached.relationshipsLoaded) && (includeArchived || !cached.archived)) {
       logEvent("linear_issue_fetch_cached", { workspace: this.config.name, identifier: cached.identifier });
       return cached;
     }
     try {
-      const issue = await this.client.issue(issueId);
+      const issue = this.sdkIssueCache.get(issueId) ?? await this.client.issue(issueId);
+      this.cacheSdkIssue(issue);
       if (!includeArchived && issue.archivedAt) {
         logEvent("linear_issue_archived", { workspace: this.config.name, issueId });
         return null;
@@ -301,6 +307,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     });
     const issue = await payload.issue;
     if (!issue) throw new Error("Linear returned no issue after createIssue");
+    this.cacheSdkIssue(issue);
     logEvent("linear_issue_created", { workspace: this.config.name, identifier: issue.identifier });
     const result = await this.toLinearIssue(issue);
     this.cacheIssue(result);
@@ -333,6 +340,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     const payload = await this.client.updateIssue(issueId, input);
     const issue = await payload.issue;
     if (!issue) throw new Error(`Linear returned no issue after updateIssue(${issueId})`);
+    this.cacheSdkIssue(issue);
     logEvent("linear_issue_updated", { workspace: this.config.name, identifier: issue.identifier, fields: Object.keys(update) });
     const result = await this.toLinearIssue(issue);
     this.cacheIssue(result);
@@ -397,22 +405,41 @@ export class SdkLinearWorkspace implements LinearWorkspace {
   }
 
   public async listProjectMilestones(projectId: string, includeArchived = false): Promise<LinearMilestone[]> {
-    logEvent("linear_project_milestones_fetching", {
-      workspace: this.config.name,
-      projectId,
-      includeArchived,
-    });
-    const project = await this.client.project(projectId);
-    const milestones = await all(project.projectMilestones({ includeArchived, first: 100 }));
-    const result = milestones
-      .filter((milestone) => includeArchived || !milestone.archivedAt)
-      .map((milestone) => this.toLinearMilestone(milestone, projectId));
-    logEvent("linear_project_milestones_fetched", {
-      workspace: this.config.name,
-      projectId,
-      count: result.length,
-    });
-    return result;
+    const cacheKey = projectMilestoneCacheKey(projectId, includeArchived);
+    const cached = this.projectMilestoneCache.get(cacheKey);
+    if (cached) return cached.map((milestone) => structuredClone(milestone));
+    const inFlight = this.projectMilestonePromises.get(cacheKey);
+    if (inFlight) return (await inFlight).map((milestone) => structuredClone(milestone));
+
+    const promise = (async () => {
+      logEvent("linear_project_milestones_fetching", {
+        workspace: this.config.name,
+        projectId,
+        includeArchived,
+      });
+      const project = await this.client.project(projectId);
+      const milestones = await all(project.projectMilestones({ includeArchived, first: 100 }));
+      const result = milestones
+        .filter((milestone) => includeArchived || !milestone.archivedAt)
+        .map((milestone) => this.toLinearMilestone(milestone, projectId));
+      logEvent("linear_project_milestones_fetched", {
+        workspace: this.config.name,
+        projectId,
+        count: result.length,
+      });
+      return result;
+    })();
+    this.projectMilestonePromises.set(cacheKey, promise);
+    try {
+      const result = await promise;
+      this.projectMilestoneCache.set(cacheKey, result);
+      return result.map((milestone) => structuredClone(milestone));
+    } catch (error) {
+      if (this.projectMilestonePromises.get(cacheKey) === promise) {
+        this.projectMilestonePromises.delete(cacheKey);
+      }
+      throw error;
+    }
   }
 
   public async getProjectMilestone(milestoneId: string, includeArchived = false): Promise<LinearMilestone | null> {
@@ -448,6 +475,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     });
     const milestone = await payload.projectMilestone;
     if (!milestone) throw new Error("Linear returned no milestone after createProjectMilestone");
+    this.clearProjectMilestoneCache();
     const result = this.toLinearMilestone(milestone, input.projectId);
     logEvent("linear_project_milestone_created", { workspace: this.config.name, milestoneId: result.id });
     return result;
@@ -468,6 +496,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     const payload = await this.client.updateProjectMilestone(milestoneId, input);
     const milestone = await payload.projectMilestone;
     if (!milestone) throw new Error(`Linear returned no milestone after updateProjectMilestone(${milestoneId})`);
+    this.clearProjectMilestoneCache();
     const result = this.toLinearMilestone(milestone, update.projectId);
     logEvent("linear_project_milestone_updated", {
       workspace: this.config.name,
@@ -481,6 +510,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     logEvent("linear_project_milestone_deletion_starting", { workspace: this.config.name, milestoneId });
     const payload = await this.client.deleteProjectMilestone(milestoneId);
     if (!payload.success) throw new Error(`Linear failed to delete project milestone ${milestoneId}`);
+    this.clearProjectMilestoneCache();
     logEvent("linear_project_milestone_deleted", { workspace: this.config.name, milestoneId });
   }
 
@@ -524,6 +554,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     const payload = await (await this.client.issue(issueId)).unarchive();
     const issue = await payload.entity;
     if (!issue) throw new Error(`Linear returned no issue after unarchive(${issueId})`);
+    this.cacheSdkIssue(issue);
     const result = await this.toLinearIssue(issue);
     this.cacheIssue(result);
     return result;
@@ -679,6 +710,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       parentUpdatedAt: relationships.parentUpdatedAt,
       relations: relationships.relations,
       relationChanges: relationships.relationChanges,
+      relationshipsLoaded: Boolean(options.includeRelationships),
     };
     logEvent("linear_issue_hydration_completed", {
       workspace: this.config.name,
@@ -1023,6 +1055,16 @@ export class SdkLinearWorkspace implements LinearWorkspace {
   private cacheIssue(issue: LinearIssue): void {
     this.issueCache.set(issue.id, issue);
     this.issueCache.set(issue.identifier, issue);
+  }
+
+  private cacheSdkIssue(issue: SdkIssue): void {
+    this.sdkIssueCache.set(issue.id, issue);
+    this.sdkIssueCache.set(issue.identifier, issue);
+  }
+
+  private clearProjectMilestoneCache(): void {
+    this.projectMilestoneCache.clear();
+    this.projectMilestonePromises.clear();
   }
 
   private cacheProject(project: LinearProject): void {

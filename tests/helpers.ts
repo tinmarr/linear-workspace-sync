@@ -36,7 +36,10 @@ export class FakeWorkspace implements LinearWorkspace {
   public readonly listQueries: IssueQuery[] = [];
   public readonly projectQueries: ProjectQuery[] = [];
   public getIssueCalls = 0;
+  public nonRelationshipIssueCalls = 0;
+  public relationshipIssueCalls = 0;
   public getProjectCalls = 0;
+  public listProjectMilestoneCalls = 0;
   private nextIssue = 1;
   private nextProject = 1;
   private nextMilestone = 1;
@@ -57,13 +60,20 @@ export class FakeWorkspace implements LinearWorkspace {
     return [...this.issues.values()]
       .filter((issue) => !issue.archived)
       .filter((issue) => !query.assignedToViewer || issue.assigneeEmail === this.viewerEmail)
-      .map((issue) => structuredClone(issue));
+      .map((issue) => ({
+        ...structuredClone(issue),
+        relationshipsLoaded: query.includeRelationships ?? false,
+      }));
   }
 
-  public async getIssue(issueId: string, _includeArchived = false, _includeRelationships = false): Promise<LinearIssue | null> {
+  public async getIssue(issueId: string, _includeArchived = false, includeRelationships = false): Promise<LinearIssue | null> {
     this.getIssueCalls++;
+    if (includeRelationships) this.relationshipIssueCalls++;
+    else this.nonRelationshipIssueCalls++;
     const issue = this.issues.get(issueId) ?? [...this.issues.values()].find((item) => item.identifier === issueId);
-    return issue ? structuredClone(issue) : null;
+    return issue
+      ? { ...structuredClone(issue), relationshipsLoaded: includeRelationships }
+      : null;
   }
 
   public async listProjects(query: ProjectQuery): Promise<LinearProject[]> {
@@ -120,9 +130,10 @@ export class FakeWorkspace implements LinearWorkspace {
       parentUpdatedAt: null,
       relations: [],
       relationChanges: [],
+      relationshipsLoaded: false,
     };
     this.issues.set(id, issue);
-    return structuredClone(issue);
+    return { ...structuredClone(issue), relationshipsLoaded: false };
   }
 
   public async createProject(input: ProjectCreateInput): Promise<LinearProject> {
@@ -158,6 +169,7 @@ export class FakeWorkspace implements LinearWorkspace {
   }
 
   public async listProjectMilestones(projectId: string, includeArchived = false): Promise<LinearMilestone[]> {
+    this.listProjectMilestoneCalls++;
     return [...this.milestones.values()]
       .filter((milestone) => milestone.projectId === projectId)
       .filter((milestone) => includeArchived || !milestone.archived)
@@ -206,7 +218,7 @@ export class FakeWorkspace implements LinearWorkspace {
     Object.assign(issue, update);
     issue.updatedAt = this.timestamp();
     if (parentChanged) issue.parentUpdatedAt = issue.updatedAt;
-    return structuredClone(issue);
+    return { ...structuredClone(issue), relationshipsLoaded: false };
   }
 
   public async createIssueRelation(input: IssueRelationCreateInput): Promise<IssueRelationSnapshot> {
@@ -365,6 +377,7 @@ export function issue(
     parentUpdatedAt: values.parentUpdatedAt ?? null,
     relations: values.relations ?? [],
     relationChanges: values.relationChanges ?? [],
+    relationshipsLoaded: true,
   };
 }
 

@@ -69,7 +69,7 @@ describe("sync state", () => {
     state.upsertMapping(mapping);
     expect(state.findMappingByExternal("work", "work-1")).toEqual(mapping);
     expect(state.lastRunAt()).toBeUndefined();
-    state.markRunCompleted(1234);
+    state.markRunAttempted(1234);
     expect(state.lastRunAt()).toBe(1234);
     expect(() => state.upsertMapping({
       ...mapping,
@@ -94,12 +94,22 @@ describe("sync state", () => {
       externalPresent: false,
       personalUpdatedAt: "2026-01-01T00:00:00.000Z",
       externalUpdatedAt: null,
+      personalRelationId: "personal-relation",
+      externalRelationId: "external-relation",
       personalManaged: false,
       externalManaged: true,
     };
     state.putRelationshipState(relationship);
     expect(state.getRelationshipState("work", "personal-1", "personal-2", "blocks")).toEqual(relationship);
     expect(state.listRelationshipStates("work")).toEqual([relationship]);
+    const endpoint = {
+      externalWorkspaceKey: "work",
+      side: "personal" as const,
+      issueId: "personal-1",
+      issueUpdatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    state.putRelationshipEndpointState(endpoint);
+    expect(state.getRelationshipEndpointState("work", "personal", "personal-1")).toEqual(endpoint);
 
     const parent = {
       externalWorkspaceKey: "work",

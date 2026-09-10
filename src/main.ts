@@ -6,6 +6,7 @@ import { ReconciliationEngine } from "./reconcile.js";
 import { createSdkWorkspaces } from "./sdk-adapter.js";
 import { SyncState } from "./state.js";
 import { logError, logEvent } from "./log.js";
+import { isPollDue } from "./poll.js";
 
 function configPathFromArgs(): string {
   const index = process.argv.indexOf("--config");
@@ -37,11 +38,11 @@ async function main(): Promise<void> {
   try {
     const initial = !state.isInitialized();
     const lastRunAt = state.lastRunAt();
-    if (!forceFromArgs() && !initial && lastRunAt !== undefined
-      && Date.now() - lastRunAt < config.pollIntervalSeconds * 1000) {
+    if (!isPollDue(lastRunAt, Date.now(), config.pollIntervalSeconds, forceFromArgs(), initial)) {
       logEvent("sync_skipped", { reason: "poll_interval", pollIntervalSeconds: config.pollIntervalSeconds });
       return;
     }
+    state.markRunAttempted();
     logEvent("workspace_clients_starting");
     const clients = await createSdkWorkspaces(config);
     logEvent("workspace_clients_ready", {
