@@ -14,6 +14,7 @@ import type {
   MilestoneCreateInput,
   MilestoneUpdate,
 } from "./linear.js";
+import { projectPairKey } from "./keys.js";
 import { SyncState } from "./state.js";
 
 export type MilestoneSyncResult = {
@@ -42,6 +43,8 @@ type MilestoneLocation = {
 };
 
 export class MilestoneSynchronizer {
+  private readonly projectPromises = new Map<string, Promise<MilestoneSyncResult>>();
+
   public constructor(
     private readonly personal: LinearWorkspace,
     private readonly state: SyncState,
@@ -49,6 +52,19 @@ export class MilestoneSynchronizer {
   ) {}
 
   public async syncProject(
+    personalProject: LinearProject,
+    externalProject: LinearProject,
+    pair: MilestoneWorkspacePair,
+  ): Promise<MilestoneSyncResult> {
+    const key = projectPairKey(pair.externalConfig.key, personalProject.id, externalProject.id);
+    const existing = this.projectPromises.get(key);
+    if (existing) return existing;
+    const promise = this.syncProjectOnce(personalProject, externalProject, pair);
+    this.projectPromises.set(key, promise);
+    return promise;
+  }
+
+  private async syncProjectOnce(
     personalProject: LinearProject,
     externalProject: LinearProject,
     pair: MilestoneWorkspacePair,

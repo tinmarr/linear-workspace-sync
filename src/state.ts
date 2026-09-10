@@ -11,6 +11,8 @@ import type {
   ProjectMappingRecord,
   ProjectMembershipSyncState,
   ProjectSnapshot,
+  RelationshipEndpointSide,
+  RelationshipEndpointState,
   RelationshipSyncState,
   WorkspaceKey,
 } from "./domain.js";
@@ -59,6 +61,8 @@ type RelationshipRow = {
   external_present: number;
   personal_updated_at: string | null;
   external_updated_at: string | null;
+  personal_relation_id: string | null;
+  external_relation_id: string | null;
   personal_managed: number;
   external_managed: number;
 };
@@ -117,6 +121,10 @@ export class SyncState {
   }
 
   public markRunCompleted(at = Date.now()): void {
+    this.markRunAttempted(at);
+  }
+
+  public markRunAttempted(at = Date.now()): void {
     this.db
       .prepare(
         "INSERT INTO metadata(key, value) VALUES('last_run_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -196,6 +204,34 @@ export class SyncState {
         conflict: mapping.conflict ? 1 : 0,
         broken: mapping.broken ? 1 : 0,
       });
+  }
+
+  public deactivateMapping(mapping: MappingRecord): void {
+    const transaction = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `DELETE FROM relationship_snapshots
+            WHERE external_workspace_key = ?
+              AND (personal_issue_id = ? OR personal_related_issue_id = ?)`,
+        )
+        .run(mapping.externalWorkspaceKey, mapping.personalIssueId, mapping.personalIssueId);
+      this.db
+        .prepare(
+          `DELETE FROM parent_snapshots
+            WHERE external_workspace_key = ? AND personal_issue_id = ?`,
+        )
+        .run(mapping.externalWorkspaceKey, mapping.personalIssueId);
+      this.db
+        .prepare(
+          `DELETE FROM relationship_endpoints
+            WHERE external_workspace_key = ?
+              AND ((side = 'personal' AND issue_id = ?)
+                OR (side = 'external' AND issue_id = ?))`,
+        )
+        .run(mapping.externalWorkspaceKey, mapping.personalIssueId, mapping.externalIssueId);
+      this.upsertMapping({ ...mapping, active: false });
+    });
+    transaction();
   }
 
   public getProjectMapping(
@@ -567,6 +603,18 @@ export class SyncState {
               AND (personal_issue_id = ? OR personal_parent_issue_id = ?)`,
         )
         .run(mapping.externalWorkspaceKey, previousPersonalIssueId, previousPersonalIssueId);
+      this.db
+        .prepare(
+          `DELETE FROM relationship_endpoints
+            WHERE external_workspace_key = ? AND side = 'personal' AND issue_id = ?`,
+        )
+        .run(mapping.externalWorkspaceKey, previousPersonalIssueId);
+      this.db
+        .prepare(
+          `DELETE FROM relationship_endpoints
+            WHERE external_workspace_key = ? AND side = 'external' AND issue_id = ?`,
+        )
+        .run(mapping.externalWorkspaceKey, mapping.externalIssueId);
       this.upsertMapping(mapping);
     });
     transaction();
@@ -607,6 +655,7 @@ export class SyncState {
         `SELECT external_workspace_key, personal_issue_id, personal_related_issue_id,
                 relation_type, personal_present, external_present,
                 personal_updated_at, external_updated_at,
+                personal_relation_id, external_relation_id,
                 personal_managed, external_managed
            FROM relationship_snapshots
           WHERE external_workspace_key = ?
@@ -624,6 +673,7 @@ export class SyncState {
         `SELECT external_workspace_key, personal_issue_id, personal_related_issue_id,
                 relation_type, personal_present, external_present,
                 personal_updated_at, external_updated_at,
+                personal_relation_id, external_relation_id,
                 personal_managed, external_managed
            FROM relationship_snapshots
           WHERE external_workspace_key = ?`,
@@ -638,16 +688,22 @@ export class SyncState {
         `INSERT INTO relationship_snapshots(
           external_workspace_key, personal_issue_id, personal_related_issue_id,
           relation_type, personal_present, external_present,
-          personal_updated_at, external_updated_at, personal_managed, external_managed
+          personal_updated_at, external_updated_at,
+          personal_relation_id, external_relation_id,
+          personal_managed, external_managed
         ) VALUES (@externalWorkspaceKey, @personalIssueId, @personalRelatedIssueId,
           @relationType, @personalPresent, @externalPresent,
-          @personalUpdatedAt, @externalUpdatedAt, @personalManaged, @externalManaged)
+          @personalUpdatedAt, @externalUpdatedAt,
+          @personalRelationId, @externalRelationId,
+          @personalManaged, @externalManaged)
         ON CONFLICT(external_workspace_key, personal_issue_id, personal_related_issue_id, relation_type)
         DO UPDATE SET
           personal_present = excluded.personal_present,
           external_present = excluded.external_present,
           personal_updated_at = excluded.personal_updated_at,
           external_updated_at = excluded.external_updated_at,
+          personal_relation_id = excluded.personal_relation_id,
+          external_relation_id = excluded.external_relation_id,
           personal_managed = excluded.personal_managed,
           external_managed = excluded.external_managed`,
       )
@@ -655,9 +711,50 @@ export class SyncState {
         ...state,
         personalPresent: state.personalPresent ? 1 : 0,
         externalPresent: state.externalPresent ? 1 : 0,
+        personalRelationId: state.personalRelationId ?? null,
+        externalRelationId: state.externalRelationId ?? null,
         personalManaged: state.personalManaged ? 1 : 0,
         externalManaged: state.externalManaged ? 1 : 0,
       });
+  }
+
+  public getRelationshipEndpointState(
+    externalWorkspaceKey: WorkspaceKey,
+    side: RelationshipEndpointSide,
+    issueId: string,
+  ): RelationshipEndpointState | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT external_workspace_key, side, issue_id, issue_updated_at
+           FROM relationship_endpoints
+          WHERE external_workspace_key = ? AND side = ? AND issue_id = ?`,
+      )
+      .get(externalWorkspaceKey, side, issueId) as {
+        external_workspace_key: string;
+        side: RelationshipEndpointSide;
+        issue_id: string;
+        issue_updated_at: string;
+      } | undefined;
+    return row
+      ? {
+        externalWorkspaceKey: row.external_workspace_key,
+        side: row.side,
+        issueId: row.issue_id,
+        issueUpdatedAt: row.issue_updated_at,
+      }
+      : undefined;
+  }
+
+  public putRelationshipEndpointState(state: RelationshipEndpointState): void {
+    this.db
+      .prepare(
+        `INSERT INTO relationship_endpoints(
+          external_workspace_key, side, issue_id, issue_updated_at
+        ) VALUES (@externalWorkspaceKey, @side, @issueId, @issueUpdatedAt)
+        ON CONFLICT(external_workspace_key, side, issue_id)
+        DO UPDATE SET issue_updated_at = excluded.issue_updated_at`,
+      )
+      .run(state);
   }
 
   public getParentState(
@@ -980,6 +1077,8 @@ export class SyncState {
         external_present INTEGER NOT NULL,
         personal_updated_at TEXT,
         external_updated_at TEXT,
+        personal_relation_id TEXT,
+        external_relation_id TEXT,
         personal_managed INTEGER NOT NULL,
         external_managed INTEGER NOT NULL,
         PRIMARY KEY (external_workspace_key, personal_issue_id, personal_related_issue_id, relation_type)
@@ -997,11 +1096,21 @@ export class SyncState {
         PRIMARY KEY (external_workspace_key, personal_issue_id)
       );
 
+      CREATE TABLE IF NOT EXISTS relationship_endpoints (
+        external_workspace_key TEXT NOT NULL,
+        side TEXT NOT NULL,
+        issue_id TEXT NOT NULL,
+        issue_updated_at TEXT NOT NULL,
+        PRIMARY KEY (external_workspace_key, side, issue_id)
+      );
+
       CREATE UNIQUE INDEX IF NOT EXISTS mappings_one_external_per_personal_issue
         ON mappings(personal_issue_id);
     `);
     this.ensureColumn("project_membership_snapshots", "personal_milestone_id", "TEXT");
     this.ensureColumn("project_membership_snapshots", "external_milestone_id", "TEXT");
+    this.ensureColumn("relationship_snapshots", "personal_relation_id", "TEXT");
+    this.ensureColumn("relationship_snapshots", "external_relation_id", "TEXT");
   }
 
   private ensureColumn(table: string, column: string, definition: string): void {
@@ -1076,6 +1185,8 @@ export class SyncState {
       externalPresent: row.external_present === 1,
       personalUpdatedAt: row.personal_updated_at,
       externalUpdatedAt: row.external_updated_at,
+      ...(row.personal_relation_id ? { personalRelationId: row.personal_relation_id } : {}),
+      ...(row.external_relation_id ? { externalRelationId: row.external_relation_id } : {}),
       personalManaged: row.personal_managed === 1,
       externalManaged: row.external_managed === 1,
     };

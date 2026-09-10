@@ -17,6 +17,7 @@ import type {
   ProjectUpdate,
 } from "./linear.js";
 import { logEvent } from "./log.js";
+import { projectMappingKey } from "./keys.js";
 import { MilestoneSynchronizer } from "./milestone-sync.js";
 import { SyncState } from "./state.js";
 
@@ -102,7 +103,7 @@ export class ProjectSynchronizer {
   ): Promise<{ project: LinearProject | null; result: ProjectSyncResult }> {
     const result = this.emptyResult();
     const externalProject = await pair.external.getProject(externalProjectId, true);
-    const projectKey = this.projectMappingKey(pair.externalConfig.key, externalProjectId);
+    const projectKey = projectMappingKey(pair.externalConfig.key, externalProjectId);
     if (!externalProject || externalProject.archived) {
       context.ignoredExternalProjectKeys.add(projectKey);
       return { project: null, result };
@@ -165,7 +166,7 @@ export class ProjectSynchronizer {
       if (!mapping.active) continue;
       const pair = this.getPair(mapping.externalWorkspaceKey);
       if (!pair) continue;
-      const processedKey = this.projectMappingKey(mapping.externalWorkspaceKey, mapping.externalProjectId);
+      const processedKey = projectMappingKey(mapping.externalWorkspaceKey, mapping.externalProjectId);
       if (context.processedMappingKeys.has(processedKey)) continue;
       const personalProject = context.personalProjects.get(mapping.personalProjectId)
         ?? await this.personal.getProject(mapping.personalProjectId, true);
@@ -299,6 +300,8 @@ export class ProjectSynchronizer {
     created: boolean,
     processedMappingKeys: Set<string>,
   ): Promise<ProjectSyncResult> {
+    const processedKey = projectMappingKey(pair.externalConfig.key, externalProject.id);
+    if (processedMappingKeys.has(processedKey)) return this.emptyResult();
     const result = this.emptyResult();
     await this.ensurePersonalProjectLinkAndLabel(personalProject, pair, externalProject);
     const mapping = this.state.getProjectMapping(personalProject.id, pair.externalConfig.key);
@@ -312,7 +315,7 @@ export class ProjectSynchronizer {
     if (!previous || created) {
       this.state.putProjectSnapshot(currentPersonal, pair.externalConfig.key);
       this.state.putProjectSnapshot(currentExternal, pair.externalConfig.key);
-      processedMappingKeys.add(this.projectMappingKey(pair.externalConfig.key, externalProject.id));
+      processedMappingKeys.add(processedKey);
       return result;
     }
 
@@ -333,7 +336,7 @@ export class ProjectSynchronizer {
     );
     if (conflicts.length > 0) {
       await this.markProjectConflict(personalProject, pair.externalConfig.key, conflicts);
-      processedMappingKeys.add(this.projectMappingKey(pair.externalConfig.key, externalProject.id));
+      processedMappingKeys.add(processedKey);
       result.conflicts++;
       return result;
     }
@@ -376,7 +379,7 @@ export class ProjectSynchronizer {
       await this.removeProjectLabelIfPresent(personalProject, this.config.syncLabels.broken);
       this.state.setProjectBroken(personalProject.id, pair.externalConfig.key, false);
     }
-    processedMappingKeys.add(this.projectMappingKey(pair.externalConfig.key, externalProject.id));
+    processedMappingKeys.add(processedKey);
     return result;
   }
 
@@ -805,10 +808,6 @@ export class ProjectSynchronizer {
     const externalConfig = this.config.external.find((workspace) => workspace.key === externalWorkspaceKey);
     const external = this.externals.get(externalWorkspaceKey);
     return externalConfig && external ? { externalConfig, external } : undefined;
-  }
-
-  private projectMappingKey(externalWorkspaceKey: WorkspaceKey, externalProjectId: string): string {
-    return `${externalWorkspaceKey}\u0000${externalProjectId}`;
   }
 
   private emptyResult(): ProjectSyncResult {

@@ -9,6 +9,7 @@ import type {
 import { CORE_FIELDS } from "./domain.js";
 import type { ExternalIssueLink, IssueCreateInput, IssueUpdate, LinearIssue, LinearWorkspace } from "./linear.js";
 import { logEvent } from "./log.js";
+import { issueMappingKey, projectMappingKey } from "./keys.js";
 import { RelationshipSynchronizer } from "./relationship-sync.js";
 import {
   ProjectSynchronizer,
@@ -86,6 +87,7 @@ export class ReconciliationEngine {
       broken: 0,
     };
     this.addProjectResult(result, projectRun.result);
+    await this.discoverExternalIssues(context, initial);
 
     for (const issue of personalIssues) {
       logEvent("personal_issue_reconciliation_starting", {
@@ -111,39 +113,13 @@ export class ReconciliationEngine {
     }
 
     for (const pair of this.workspacePairs()) {
-      logEvent("external_issue_discovery_starting", {
-        workspace: pair.externalConfig.name,
-        team: pair.externalConfig.teamName,
-      });
-      let assigned: LinearIssue[];
-      try {
-        assigned = await pair.external.listIssues({
-          assignedToViewer: true,
-          teamName: pair.externalConfig.teamName,
-          includeArchived: false,
-          includeLabels: false,
-          includeExternalLinks: false,
-          excludeCompleted: initial,
-        });
-        this.state.clearFailure(`workspace:${pair.externalConfig.key}`, "__list__");
-        logEvent("external_issues_discovered", {
-          workspace: pair.externalConfig.name,
-          count: assigned.length,
-        });
-      } catch (error: unknown) {
-        this.handleWorkspaceFailure(pair.externalConfig.key, error);
-        continue;
-      }
-      context.assignedExternalIds.set(
-        pair.externalConfig.key,
-        new Set(assigned.map((issue) => issue.id)),
-      );
-      context.externalIssues.set(
-        pair.externalConfig.key,
-        new Map(assigned.map((issue) => [issue.id, issue])),
-      );
-      for (const externalIssue of assigned) {
-        const processedKey = this.mappingKey(pair.externalConfig.key, externalIssue.id);
+      const assigned = context.externalIssues.get(pair.externalConfig.key);
+      if (!assigned) continue;
+      const assignedIds = context.assignedExternalIds.get(pair.externalConfig.key) ?? new Set<string>();
+      for (const externalIssueId of assignedIds) {
+        const externalIssue = assigned.get(externalIssueId);
+        if (!externalIssue) continue;
+        const processedKey = issueMappingKey(pair.externalConfig.key, externalIssue.id);
         if (context.processedMappingKeys.has(processedKey)) {
           this.state.clearFailure(pair.externalConfig.key, externalIssue.id);
           logEvent("inbound_issue_reconciliation_skipped", {
@@ -199,7 +175,7 @@ export class ReconciliationEngine {
       if (!pair) {
         continue;
       }
-      if (context.processedMappingKeys.has(this.mappingKey(mapping.externalWorkspaceKey, mapping.externalIssueId))) {
+      if (context.processedMappingKeys.has(issueMappingKey(mapping.externalWorkspaceKey, mapping.externalIssueId))) {
         logEvent("mapping_reconciliation_skipped", {
           personalIssueId: mapping.personalIssueId,
           externalWorkspace: mapping.externalWorkspaceKey,
@@ -210,7 +186,8 @@ export class ReconciliationEngine {
       }
       const personalIssue = context.personalIssues.get(mapping.personalIssueId)
         ?? await this.personal.getIssue(mapping.personalIssueId, true);
-      const externalIssue = await pair.external.getIssue(mapping.externalIssueId, true);
+      if (personalIssue) context.personalIssues.set(personalIssue.id, personalIssue);
+      const externalIssue = await this.getExternalIssue(pair, mapping.externalIssueId, context);
       if (!personalIssue || personalIssue.archived) {
         if (externalIssue && !externalIssue.archived) {
           if (externalIssue.projectId) {
@@ -265,7 +242,7 @@ export class ReconciliationEngine {
         .get(pair.externalConfig.key)
         ?.has(externalIssue.id) ?? false;
       if (!hasPersonalSignal && !isAssignedExternally) {
-        this.state.upsertMapping({ ...mapping, active: false });
+        this.state.deactivateMapping(mapping);
         continue;
       }
       if (externalIssue.projectId) {
@@ -343,7 +320,7 @@ export class ReconciliationEngine {
         result.broken++;
         return result;
       }
-      const externalIssue = await pair.external.getIssue(link.issueId, true);
+      const externalIssue = await this.getExternalIssue(pair, link.issueId, context);
       if (!externalIssue || externalIssue.archived) {
         const mapping = this.state.getMapping(personalIssue.id, pair.externalConfig.key);
         await this.markExternalUnavailable(personalIssue, mapping, externalIssue);
@@ -394,7 +371,7 @@ export class ReconciliationEngine {
     }
     const existing = this.state.getMapping(personalIssue.id, target.key);
     if (existing) {
-      const externalIssue = await pair.external.getIssue(existing.externalIssueId, true);
+      const externalIssue = await this.getExternalIssue(pair, existing.externalIssueId, context);
       if (externalIssue && !externalIssue.archived) {
         if (externalIssue.projectId) {
           const projectResult = await projectSynchronizer.ensureInboundProject(
@@ -579,7 +556,7 @@ export class ReconciliationEngine {
     if (!previous || created) {
       this.state.putSnapshot(currentPersonal, pair.externalConfig.key);
       this.state.putSnapshot(currentExternal, pair.externalConfig.key);
-      processedMappingKeys.add(this.mappingKey(pair.externalConfig.key, externalIssue.id));
+      processedMappingKeys.add(issueMappingKey(pair.externalConfig.key, externalIssue.id));
       return { conflicts: 0, broken };
     }
 
@@ -589,7 +566,7 @@ export class ReconciliationEngine {
     );
     if (conflicts.length > 0) {
       await this.markConflict(personalIssue, pair.externalConfig.key, conflicts);
-      processedMappingKeys.add(this.mappingKey(pair.externalConfig.key, externalIssue.id));
+      processedMappingKeys.add(issueMappingKey(pair.externalConfig.key, externalIssue.id));
       return { conflicts: 1, broken: 0 };
     }
 
@@ -637,7 +614,7 @@ export class ReconciliationEngine {
       await this.removePersonalLabelIfPresent(personalIssue, this.config.syncLabels.broken);
       this.state.setBroken(personalIssue.id, pair.externalConfig.key, false);
     }
-    processedMappingKeys.add(this.mappingKey(pair.externalConfig.key, externalIssue.id));
+    processedMappingKeys.add(issueMappingKey(pair.externalConfig.key, externalIssue.id));
     return { conflicts: 0, broken };
   }
 
@@ -675,7 +652,7 @@ export class ReconciliationEngine {
       ? projectContext.personalProjects.get(projectMapping.personalProjectId)
       : undefined;
     const projectKey = externalIssue.projectId
-      ? `${pair.externalConfig.key}\u0000${externalIssue.projectId}`
+      ? projectMappingKey(pair.externalConfig.key, externalIssue.projectId)
       : undefined;
     const projectId = projectMapping?.active && mappedProject
       && !mappedProject.archived
@@ -813,7 +790,7 @@ export class ReconciliationEngine {
       mapping?.externalWorkspaceKey,
     );
     if (mapping) {
-      this.state.upsertMapping({ ...mapping, active: false, broken: true });
+      this.state.deactivateMapping({ ...mapping, broken: true });
     }
   }
 
@@ -1006,15 +983,66 @@ export class ReconciliationEngine {
     return externalConfig && external ? { externalConfig, external } : undefined;
   }
 
+  private async discoverExternalIssues(
+    context: ReconcileContext,
+    initial: boolean,
+  ): Promise<void> {
+    for (const pair of this.workspacePairs()) {
+      logEvent("external_issue_discovery_starting", {
+        workspace: pair.externalConfig.name,
+        team: pair.externalConfig.teamName,
+      });
+      try {
+        const assigned = await pair.external.listIssues({
+          assignedToViewer: true,
+          teamName: pair.externalConfig.teamName,
+          includeArchived: false,
+          includeLabels: false,
+          includeExternalLinks: false,
+          excludeCompleted: initial,
+        });
+        this.state.clearFailure(`workspace:${pair.externalConfig.key}`, "__list__");
+        context.assignedExternalIds.set(
+          pair.externalConfig.key,
+          new Set(assigned.map((issue) => issue.id)),
+        );
+        context.externalIssues.set(
+          pair.externalConfig.key,
+          new Map(assigned.map((issue) => [issue.id, issue])),
+        );
+        logEvent("external_issues_discovered", {
+          workspace: pair.externalConfig.name,
+          count: assigned.length,
+        });
+      } catch (error: unknown) {
+        this.handleWorkspaceFailure(pair.externalConfig.key, error);
+      }
+    }
+  }
+
+  private async getExternalIssue(
+    pair: WorkspacePair,
+    issueId: string,
+    context: ReconcileContext,
+  ): Promise<LinearIssue | null> {
+    const discovered = context.externalIssues.get(pair.externalConfig.key);
+    const cached = discovered?.get(issueId)
+      ?? [...(discovered?.values() ?? [])].find((issue) => issue.identifier === issueId);
+    if (cached) return cached;
+    const fetched = await pair.external.getIssue(issueId, true);
+    if (fetched) {
+      const cache = discovered ?? new Map<string, LinearIssue>();
+      cache.set(fetched.id, fetched);
+      context.externalIssues.set(pair.externalConfig.key, cache);
+    }
+    return fetched;
+  }
+
   private workspacePairs(): WorkspacePair[] {
     return this.config.external.flatMap((externalConfig) => {
       const external = this.externals.get(externalConfig.key);
       return external ? [{ externalConfig, external }] : [];
     });
-  }
-
-  private mappingKey(externalWorkspaceKey: WorkspaceKey, externalIssueId: string): string {
-    return `${externalWorkspaceKey}\u0000${externalIssueId}`;
   }
 
   private emptyResult(): ReconciliationResult {

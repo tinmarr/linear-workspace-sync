@@ -21,6 +21,7 @@ export type LinearIssue = IssueSnapshot & {
   parentUpdatedAt: string | null;
   relations: IssueRelationSnapshot[];
   relationChanges: IssueRelationChange[];
+  relationshipsLoaded?: boolean;
 };
 
 export type LinearMilestone = MilestoneSnapshot;

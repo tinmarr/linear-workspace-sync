@@ -24,6 +24,8 @@ export type RelationshipSyncState = {
   externalPresent: boolean;
   personalUpdatedAt: string | null;
   externalUpdatedAt: string | null;
+  personalRelationId?: string;
+  externalRelationId?: string;
   personalManaged: boolean;
   externalManaged: boolean;
 };
@@ -37,6 +39,15 @@ export type ParentSyncState = {
   externalUpdatedAt: string | null;
   personalManaged: boolean;
   externalManaged: boolean;
+};
+
+export type RelationshipEndpointSide = "personal" | "external";
+
+export type RelationshipEndpointState = {
+  externalWorkspaceKey: WorkspaceKey;
+  side: RelationshipEndpointSide;
+  issueId: string;
+  issueUpdatedAt: string;
 };
 
 export const DEFAULT_NOTIFICATION_ACCESS_TOKEN_ENV = "LINEAR_NOTIFICATION_ACCESS_TOKEN";
