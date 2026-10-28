@@ -92,6 +92,28 @@ export class ReconciliationEngine {
       broken: 0,
     };
     this.addProjectResult(result, projectRun.result);
+    for (const pair of this.workspacePairs()) {
+      try {
+        const projects = await pair.external.listProjects({
+          teamName: pair.externalConfig.teamName,
+          includeArchived: false,
+          includeLabels: true,
+          includeExternalLinks: true,
+          includeResources: true,
+        });
+        for (const project of projects) {
+          if (!project.leadAssigned || project.archived) continue;
+          try {
+            const outcome = await projectSynchronizer.ensureInboundProject(pair, project.id, context.projectContext);
+            this.addProjectResult(result, outcome.result);
+          } catch (error: unknown) {
+            this.handleWorkspaceFailure(`project:${pair.externalConfig.key}:${project.id}`, error);
+          }
+        }
+      } catch (error: unknown) {
+        this.handleWorkspaceFailure(`projects:${pair.externalConfig.key}`, error);
+      }
+    }
     await this.discoverExternalIssues(context, initial);
 
     for (const issue of personalIssues) {

@@ -73,6 +73,33 @@ describe("reconciliation", () => {
     state.close();
   });
 
+  it("discovers external projects led by the viewer without requiring issues", async () => {
+    const { personal, work, state, engine } = setup();
+    work.projects.set("led-project", project("work", {
+      id: "led-project", url: "https://linear.app/work/project/led-project", name: "Led project", statusName: "Backlog", leadAssigned: true,
+    }));
+    work.projects.set("other-project", project("work", {
+      id: "other-project", url: "https://linear.app/work/project/other-project", name: "Other project", statusName: "Backlog", memberAssigned: true,
+    }));
+    work.projects.set("archived-project", project("work", {
+      id: "archived-project", url: "https://linear.app/work/project/archived-project", name: "Archived project", statusName: "Backlog", leadAssigned: true, archived: true,
+    }));
+
+    const first = await engine.run(true);
+    expect(first.createdInboundProjects).toBe(1);
+    expect([...personal.projects.values()]).toEqual([expect.objectContaining({
+      name: "Led project", leadAssigned: true,
+    })]);
+    expect(state.findProjectMappingByExternal("work", "led-project")).toBeDefined();
+    expect(state.findProjectMappingByExternal("work", "other-project")).toBeUndefined();
+    expect(state.findProjectMappingByExternal("work", "archived-project")).toBeUndefined();
+
+    const second = await engine.run(false);
+    expect(second.createdInboundProjects).toBe(0);
+    expect(personal.projects.size).toBe(1);
+    state.close();
+  });
+
   it("brings in an external project when an eligible inbound issue belongs to it", async () => {
     const { appConfig, personal, work, state, engine } = setup();
     appConfig.external[0].personalLabels = ["frv:work"];
