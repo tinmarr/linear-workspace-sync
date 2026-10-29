@@ -95,23 +95,21 @@ export class ReconciliationEngine {
     this.addProjectResult(result, projectRun.result);
     for (const pair of this.workspacePairs()) {
       try {
-        const projects = await pair.external.listProjects({
-          teamName: pair.externalConfig.teamName,
-          ledByViewer: true,
-          includeArchived: false,
-          includeLabels: true,
-          includeExternalLinks: true,
-          includeResources: true,
-        });
-        for (const project of projects) {
-          if (!project.leadAssigned || project.archived) continue;
+        const projectIds = await pair.external.listLedProjectIds(pair.externalConfig.teamName);
+        for (const projectId of projectIds) {
+          if (context.projectContext.processedMappingKeys.has(projectMappingKey(pair.externalConfig.key, projectId))) {
+            this.state.clearFailure(`workspace:project:${pair.externalConfig.key}:${projectId}`, "__list__");
+            continue;
+          }
           try {
-            const outcome = await projectSynchronizer.ensureInboundProject(pair, project.id, context.projectContext);
+            const outcome = await projectSynchronizer.ensureInboundProject(pair, projectId, context.projectContext);
             this.addProjectResult(result, outcome.result);
+            this.state.clearFailure(`workspace:project:${pair.externalConfig.key}:${projectId}`, "__list__");
           } catch (error: unknown) {
-            this.handleWorkspaceFailure(`project:${pair.externalConfig.key}:${project.id}`, error);
+            this.handleWorkspaceFailure(`project:${pair.externalConfig.key}:${projectId}`, error);
           }
         }
+        this.state.clearFailure(`workspace:projects:${pair.externalConfig.key}`, "__list__");
       } catch (error: unknown) {
         this.handleWorkspaceFailure(`projects:${pair.externalConfig.key}`, error);
       }
@@ -311,6 +309,7 @@ export class ReconciliationEngine {
       try {
         personalProjectRelations ??= await this.personal.listProjectRelations();
         await syncProjectRelationships(this.personal, pair.external, this.state, pair.externalConfig.key, personalProjectRelations);
+        this.state.clearFailure(`workspace:project-relationships:${pair.externalConfig.key}`, "__list__");
       } catch (error: unknown) {
         this.handleWorkspaceFailure(`project-relationships:${pair.externalConfig.key}`, error);
       }

@@ -142,6 +142,7 @@ export interface LinearWorkspace {
   listIssues(query: IssueQuery): Promise<LinearIssue[]>;
   getIssue(issueId: string, includeArchived?: boolean, includeRelationships?: boolean): Promise<LinearIssue | null>;
   listProjects(query: ProjectQuery): Promise<LinearProject[]>;
+  listLedProjectIds(teamName: string): Promise<string[]>;
   getProject(projectId: string, includeArchived?: boolean): Promise<LinearProject | null>;
   listProjectStatuses(): Promise<ProjectStatus[]>;
   listStatusNames(teamName: string): Promise<Set<string>>;

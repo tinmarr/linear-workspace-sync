@@ -1,6 +1,7 @@
 import type { ProjectMappingRecord } from "./domain.js";
 import type { LinearWorkspace, ProjectRelation, ProjectRelationInput } from "./linear.js";
 import { SyncState } from "./state.js";
+import { logEvent } from "./log.js";
 
 type Saved = {
   input: ProjectRelationInput;
@@ -70,37 +71,51 @@ export async function syncProjectRelationships(
     const previous = JSON.parse(row.value) as Saved;
     if (byPersonal.get(previous.input.projectId)?.externalProjectId !== previous.externalProjectId
       || byPersonal.get(previous.input.relatedProjectId)?.externalProjectId !== previous.externalRelatedProjectId) continue;
-    if ((previous.input.projectMilestoneId && !milestonePersonal.has(previous.input.projectMilestoneId))
-      || (previous.input.relatedProjectMilestoneId && !milestonePersonal.has(previous.input.relatedProjectMilestoneId))) continue;
+    const sourceMilestone = previous.input.projectMilestoneId && milestonePersonal.get(previous.input.projectMilestoneId);
+    const targetMilestone = previous.input.relatedProjectMilestoneId && milestonePersonal.get(previous.input.relatedProjectMilestoneId);
+    if ((previous.input.projectMilestoneId && (!sourceMilestone || sourceMilestone.personalProjectId !== previous.input.projectId))
+      || (previous.input.relatedProjectMilestoneId && (!targetMilestone || targetMilestone.personalProjectId !== previous.input.relatedProjectId))) continue;
     const entry = entries.get(row.key) ?? { input: previous.input };
     entry.previous = previous;
     entries.set(row.key, entry);
   }
+  const errors: unknown[] = [];
   for (const [key, entry] of entries) {
-    let { personal: left, external: right } = entry;
-    const previous = entry.previous;
-    let personalManaged = previous?.personalManaged ?? false;
-    let externalManaged = previous?.externalManaged ?? false;
-    const leftChanged = previous ? Boolean(left) !== Boolean(previous.personal) || Boolean(left && previous.personal && left.updatedAt !== previous.personal.updatedAt) : false;
-    const rightChanged = previous ? Boolean(right) !== Boolean(previous.external) || Boolean(right && previous.external && right.updatedAt !== previous.external.updatedAt) : false;
-    if (leftChanged) personalManaged = false;
-    if (rightChanged) externalManaged = false;
-    let winner: "personal" | "external" | undefined;
-    if (!previous && Boolean(left) !== Boolean(right)) winner = left ? "personal" : "external";
-    else if (previous && (leftChanged || rightChanged)) {
-      if (leftChanged && rightChanged) winner = (left?.updatedAt ?? projectVersions.get(entry.input.projectId)?.personal ?? "") >= (right?.updatedAt ?? projectVersions.get(entry.input.projectId)?.external ?? "") ? "personal" : "external";
-      else winner = leftChanged ? "personal" : "external";
+    try {
+      let { personal: left, external: right } = entry;
+      const previous = entry.previous;
+      let personalManaged = previous?.personalManaged ?? false;
+      let externalManaged = previous?.externalManaged ?? false;
+      const leftChanged = previous ? Boolean(left) !== Boolean(previous.personal) || Boolean(left && previous.personal && left.updatedAt !== previous.personal.updatedAt) : false;
+      const rightChanged = previous ? Boolean(right) !== Boolean(previous.external) || Boolean(right && previous.external && right.updatedAt !== previous.external.updatedAt) : false;
+      if (leftChanged) personalManaged = false;
+      if (rightChanged) externalManaged = false;
+      let winner: "personal" | "external" | undefined;
+      if (!previous && Boolean(left) !== Boolean(right)) winner = left ? "personal" : "external";
+      else if (previous && (leftChanged || rightChanged)) {
+        if (leftChanged && rightChanged) winner = (left?.updatedAt ?? projectVersions.get(entry.input.projectId)?.personal ?? "") >= (right?.updatedAt ?? projectVersions.get(entry.input.projectId)?.external ?? "") ? "personal" : "external";
+        else winner = leftChanged ? "personal" : "external";
+      }
+      const externalInput: ProjectRelationInput = { ...entry.input,
+        projectId: byPersonal.get(entry.input.projectId)!.externalProjectId,
+        relatedProjectId: byPersonal.get(entry.input.relatedProjectId)!.externalProjectId,
+        ...(entry.input.projectMilestoneId ? { projectMilestoneId: milestonePersonal.get(entry.input.projectMilestoneId)!.externalMilestoneId } : {}),
+        ...(entry.input.relatedProjectMilestoneId ? { relatedProjectMilestoneId: milestonePersonal.get(entry.input.relatedProjectMilestoneId)!.externalMilestoneId } : {}),
+      };
+      if (winner === "personal" && left && !right) { right = await external.createProjectRelation(externalInput); externalManaged = true; }
+      else if (winner === "external" && right && !left) { left = await personal.createProjectRelation(entry.input); personalRelations.push(left); personalManaged = true; }
+      else if (winner === "personal" && !left && right && externalManaged) { await external.deleteProjectRelation(right.id); right = undefined; externalManaged = false; }
+      else if (winner === "external" && !right && left && personalManaged) { await personal.deleteProjectRelation(left.id); const index = personalRelations.findIndex((relation) => relation.id === left!.id); if (index >= 0) personalRelations.splice(index, 1); left = undefined; personalManaged = false; }
+      state.putProjectRelationshipState(workspace, key, JSON.stringify({ input: entry.input, externalProjectId: externalInput.projectId, externalRelatedProjectId: externalInput.relatedProjectId, personal: left, external: right, personalManaged, externalManaged } satisfies Saved));
+    } catch (error: unknown) {
+      errors.push(error);
+      logEvent("project_relationship_sync_failure", {
+        level: "error", workspace, projectId: entry.input.projectId,
+        relatedProjectId: entry.input.relatedProjectId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (typeof error === "object" && error !== null && "status" in error && error.status === 429) break;
     }
-    const externalInput: ProjectRelationInput = { ...entry.input,
-      projectId: byPersonal.get(entry.input.projectId)!.externalProjectId,
-      relatedProjectId: byPersonal.get(entry.input.relatedProjectId)!.externalProjectId,
-      ...(entry.input.projectMilestoneId ? { projectMilestoneId: milestonePersonal.get(entry.input.projectMilestoneId)!.externalMilestoneId } : {}),
-      ...(entry.input.relatedProjectMilestoneId ? { relatedProjectMilestoneId: milestonePersonal.get(entry.input.relatedProjectMilestoneId)!.externalMilestoneId } : {}),
-    };
-    if (winner === "personal" && left && !right) { right = await external.createProjectRelation(externalInput); externalManaged = true; }
-    else if (winner === "external" && right && !left) { left = await personal.createProjectRelation(entry.input); personalRelations.push(left); personalManaged = true; }
-    else if (winner === "personal" && !left && right && externalManaged) { await external.deleteProjectRelation(right.id); right = undefined; externalManaged = false; }
-    else if (winner === "external" && !right && left && personalManaged) { await personal.deleteProjectRelation(left.id); const index = personalRelations.findIndex((relation) => relation.id === left!.id); if (index >= 0) personalRelations.splice(index, 1); left = undefined; personalManaged = false; }
-    state.putProjectRelationshipState(workspace, key, JSON.stringify({ input: entry.input, externalProjectId: externalInput.projectId, externalRelatedProjectId: externalInput.relatedProjectId, personal: left, external: right, personalManaged, externalManaged } satisfies Saved));
   }
+  if (errors.length) throw errors[0];
 }

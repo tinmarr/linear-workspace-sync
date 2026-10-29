@@ -267,6 +267,16 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     return result;
   }
 
+  public async listLedProjectIds(teamName: string): Promise<string[]> {
+    const projects = await all(this.client.projects({
+      filter: { accessibleTeams: { some: { name: { eq: teamName } } }, lead: { id: { eq: this.viewerId } } },
+      includeArchived: false,
+      first: 100,
+    }));
+    return projects.filter((project) => !project.archivedAt && !project.trashed && project.leadId === this.viewerId)
+      .map((project) => project.id);
+  }
+
   public async getProject(projectId: string, includeArchived = false): Promise<LinearProject | null> {
     logEvent("linear_project_fetching", {
       workspace: this.config.name,

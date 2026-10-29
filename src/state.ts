@@ -325,6 +325,14 @@ export class SyncState {
         .run(previousPersonalProjectId, mapping.externalWorkspaceKey);
       this.db
         .prepare(
+          `DELETE FROM project_relationship_snapshots
+            WHERE external_workspace_key = ?
+              AND (json_extract(value_json, '$.input.projectId') = ?
+                OR json_extract(value_json, '$.input.relatedProjectId') = ?)`,
+        )
+        .run(mapping.externalWorkspaceKey, previousPersonalProjectId, previousPersonalProjectId);
+      this.db
+        .prepare(
           `DELETE FROM project_membership_snapshots
             WHERE external_workspace_key = ? AND personal_project_id = ?`,
         )
