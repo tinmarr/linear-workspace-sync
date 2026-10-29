@@ -11,6 +11,7 @@ import type { ExternalIssueLink, IssueCreateInput, IssueUpdate, LinearIssue, Lin
 import { logEvent } from "./log.js";
 import { issueMappingKey, projectMappingKey } from "./keys.js";
 import { RelationshipSynchronizer } from "./relationship-sync.js";
+import { syncProjectRelationships } from "./project-relationship-sync.js";
 import {
   copyResources,
   resourceSnapshots,
@@ -302,6 +303,17 @@ export class ReconciliationEngine {
         context.externalIssues.get(pair.externalConfig.key) ?? new Map(),
         pair.externalConfig.key,
       );
+    }
+
+    let personalProjectRelations: Awaited<ReturnType<LinearWorkspace["listProjectRelations"]>> | undefined;
+    for (const pair of this.workspacePairs()) {
+      if (this.state.listProjectMappings().filter((mapping) => mapping.active && mapping.externalWorkspaceKey === pair.externalConfig.key).length < 2) continue;
+      try {
+        personalProjectRelations ??= await this.personal.listProjectRelations();
+        await syncProjectRelationships(this.personal, pair.external, this.state, pair.externalConfig.key, personalProjectRelations);
+      } catch (error: unknown) {
+        this.handleWorkspaceFailure(`project-relationships:${pair.externalConfig.key}`, error);
+      }
     }
 
     for (const pair of this.workspacePairs()) {

@@ -22,6 +22,8 @@ import type {
   LinearWorkspace,
   ProjectCreateInput,
   ProjectQuery,
+  ProjectRelation,
+  ProjectRelationInput,
   ProjectUpdate,
   MilestoneCreateInput,
   MilestoneUpdate,
@@ -518,6 +520,33 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     if (!payload.success) throw new Error(`Linear failed to delete project milestone ${milestoneId}`);
     this.clearProjectMilestoneCache();
     logEvent("linear_project_milestone_deleted", { workspace: this.config.name, milestoneId });
+  }
+
+  public async listProjectRelations(): Promise<ProjectRelation[]> {
+    const relations = await all(this.client.projectRelations({ first: 100, includeArchived: false }));
+    return relations.filter((relation) => !relation.archivedAt).map((relation) => this.toProjectRelation(relation));
+  }
+
+  public async createProjectRelation(input: ProjectRelationInput): Promise<ProjectRelation> {
+    const payload = await this.client.createProjectRelation(input);
+    const relation = await payload.projectRelation;
+    if (!relation) throw new Error("Linear returned no project relation after creation");
+    return this.toProjectRelation(relation);
+  }
+
+  public async deleteProjectRelation(relationId: string): Promise<void> {
+    const payload = await this.client.deleteProjectRelation(relationId);
+    if (!payload.success) throw new Error(`Linear failed to delete project relation ${relationId}`);
+  }
+
+  private toProjectRelation(relation: Awaited<ReturnType<LinearClient["projectRelation"]>>): ProjectRelation {
+    return {
+      id: relation.id, projectId: relation.projectId ?? "", relatedProjectId: relation.relatedProjectId ?? "",
+      type: relation.type, anchorType: relation.anchorType, relatedAnchorType: relation.relatedAnchorType,
+      ...(relation.projectMilestoneId ? { projectMilestoneId: relation.projectMilestoneId } : {}),
+      ...(relation.relatedProjectMilestoneId ? { relatedProjectMilestoneId: relation.relatedProjectMilestoneId } : {}),
+      updatedAt: this.timestamp(relation.updatedAt),
+    };
   }
 
   public async createIssueRelation(input: IssueRelationCreateInput): Promise<IssueRelationSnapshot> {

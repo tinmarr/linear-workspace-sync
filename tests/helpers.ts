@@ -19,6 +19,8 @@ import type {
   MilestoneUpdate,
   ProjectCreateInput,
   ProjectQuery,
+  ProjectRelation,
+  ProjectRelationInput,
   ProjectUpdate,
 } from "../src/linear.js";
 
@@ -27,6 +29,7 @@ export class FakeWorkspace implements LinearWorkspace {
   public readonly viewerEmail: string;
   public readonly issues = new Map<string, LinearIssue>();
   public readonly projects = new Map<string, LinearProject>();
+  public readonly projectRelations = new Map<string, ProjectRelation>();
   public readonly milestones = new Map<string, LinearMilestone>();
   public readonly labels = new Set<string>();
   public readonly projectLabels = new Set<string>();
@@ -224,6 +227,20 @@ export class FakeWorkspace implements LinearWorkspace {
     issue.updatedAt = this.timestamp();
     if (parentChanged) issue.parentUpdatedAt = issue.updatedAt;
     return { ...structuredClone(issue), relationshipsLoaded: false };
+  }
+
+  public async listProjectRelations(): Promise<ProjectRelation[]> {
+    return structuredClone([...this.projectRelations.values()]);
+  }
+
+  public async createProjectRelation(input: ProjectRelationInput): Promise<ProjectRelation> {
+    const relation = { ...input, id: `${this.key}-project-relation-${this.relationSequence++}`, updatedAt: this.timestamp() };
+    this.projectRelations.set(relation.id, relation);
+    return structuredClone(relation);
+  }
+
+  public async deleteProjectRelation(id: string): Promise<void> {
+    if (!this.projectRelations.delete(id)) throw new Error(`Unknown project relation ${id}`);
   }
 
   public async createIssueRelation(input: IssueRelationCreateInput): Promise<IssueRelationSnapshot> {

@@ -102,6 +102,18 @@ export type IssueRelationCreateInput = {
   type: string;
 };
 
+export type ProjectRelationInput = {
+  projectId: string;
+  relatedProjectId: string;
+  type: string;
+  anchorType: string;
+  relatedAnchorType: string;
+  projectMilestoneId?: string;
+  relatedProjectMilestoneId?: string;
+};
+
+export type ProjectRelation = ProjectRelationInput & { id: string; updatedAt: string };
+
 export type IssueQuery = {
   assignedToViewer?: boolean;
   teamName?: string;
@@ -142,6 +154,9 @@ export interface LinearWorkspace {
   createProjectMilestone(input: MilestoneCreateInput): Promise<LinearMilestone>;
   updateProjectMilestone(milestoneId: string, update: MilestoneUpdate): Promise<LinearMilestone>;
   deleteProjectMilestone(milestoneId: string): Promise<void>;
+  listProjectRelations(): Promise<ProjectRelation[]>;
+  createProjectRelation(input: ProjectRelationInput): Promise<ProjectRelation>;
+  deleteProjectRelation(relationId: string): Promise<void>;
   createIssueRelation(input: IssueRelationCreateInput): Promise<IssueRelationSnapshot>;
   deleteIssueRelation(relationId: string): Promise<void>;
   restoreIssue(issueId: string): Promise<LinearIssue>;

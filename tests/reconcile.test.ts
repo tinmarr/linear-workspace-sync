@@ -73,6 +73,23 @@ describe("reconciliation", () => {
     state.close();
   });
 
+  it("synchronizes dependencies after both projects are mapped", async () => {
+    const { personal, work, state, engine } = setup();
+    for (const id of ["first", "second"]) {
+      work.projects.set(id, project("work", {
+        id, url: `https://linear.app/work/project/${id}`, name: id, statusName: "Backlog", leadAssigned: true,
+      }));
+    }
+    await work.createProjectRelation({ projectId: "first", relatedProjectId: "second", type: "blocks", anchorType: "project", relatedAnchorType: "project" });
+    await engine.run(true);
+    const first = state.findProjectMappingByExternal("work", "first")!;
+    const second = state.findProjectMappingByExternal("work", "second")!;
+    expect([...personal.projectRelations.values()]).toEqual([expect.objectContaining({
+      projectId: first.personalProjectId, relatedProjectId: second.personalProjectId, type: "blocks",
+    })]);
+    state.close();
+  });
+
   it("discovers external projects led by the viewer without requiring issues", async () => {
     const { personal, work, state, engine } = setup();
     work.projects.set("led-project", project("work", {

@@ -491,6 +491,27 @@ describe("SDK notification client", () => {
 });
 
 describe("SDK project hydration and mutations", () => {
+  it("reads, creates, and deletes project relationships with milestone anchors", async () => {
+    const appConfig = config(":memory:");
+    const connection = <T>(nodes: T[]) => ({ nodes, pageInfo: { hasNextPage: false }, fetchNext: async () => connection([]) });
+    const relation = { id: "relation", projectId: "a", relatedProjectId: "b", type: "blocks", anchorType: "milestone", relatedAnchorType: "project", projectMilestoneId: "milestone", updatedAt: new Date("2026-01-01T00:00:00Z"), archivedAt: null };
+    const created: unknown[] = [];
+    const deleted: string[] = [];
+    const client = {
+      projectRelations: async () => connection([relation]),
+      createProjectRelation: async (input: unknown) => { created.push(input); return { projectRelation: Promise.resolve(relation) }; },
+      deleteProjectRelation: async (id: string) => { deleted.push(id); return { success: true }; },
+    };
+    const Workspace = SdkLinearWorkspace as unknown as new (...args: any[]) => SdkLinearWorkspace;
+    const workspace = new Workspace("work", appConfig.external[0], client, { id: "viewer", email: "me@example.com", url: "https://linear.app/work" }, []);
+    const input = { projectId: "a", relatedProjectId: "b", type: "blocks", anchorType: "milestone", relatedAnchorType: "project", projectMilestoneId: "milestone" };
+    expect(await workspace.listProjectRelations()).toEqual([expect.objectContaining(input)]);
+    expect(await workspace.createProjectRelation(input)).toMatchObject(input);
+    await workspace.deleteProjectRelation("relation");
+    expect(created).toEqual([input]);
+    expect(deleted).toEqual(["relation"]);
+  });
+
   it("filters project discovery by viewer lead before hydrating projects", async () => {
     const appConfig = config(":memory:");
     const connection = <T>(nodes: T[]) => ({ nodes, pageInfo: { hasNextPage: false }, fetchNext: async () => connection([]) });
