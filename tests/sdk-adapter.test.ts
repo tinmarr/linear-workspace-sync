@@ -491,6 +491,28 @@ describe("SDK notification client", () => {
 });
 
 describe("SDK project hydration and mutations", () => {
+  it("filters project discovery by viewer lead before hydrating projects", async () => {
+    const appConfig = config(":memory:");
+    const connection = <T>(nodes: T[]) => ({ nodes, pageInfo: { hasNextPage: false }, fetchNext: async () => connection([]) });
+    const calls: unknown[] = [];
+    const project = {
+      id: "led", url: "https://linear.app/work/project/led", name: "Led", leadId: "viewer",
+      updatedAt: new Date(), status: Promise.resolve({ name: "Backlog", type: "backlog" }),
+      members: () => connection([]), labels: () => connection([]), externalLinks: () => connection([]),
+    };
+    const unrelated = { id: "other", leadId: "someone-else" };
+    const client = { projects: async (query: unknown) => { calls.push(query); return connection([project, unrelated]); } };
+    const Workspace = SdkLinearWorkspace as unknown as new (...args: any[]) => SdkLinearWorkspace;
+    const workspace = new Workspace("work", appConfig.external[0], client,
+      { id: "viewer", email: "me@example.com", url: "https://linear.app/work" }, []);
+
+    const projects = await workspace.listProjects({ teamName: "Work", ledByViewer: true });
+    expect(calls).toEqual([expect.objectContaining({ filter: {
+      accessibleTeams: { some: { name: { eq: "Work" } } }, lead: { id: { eq: "viewer" } },
+    } })]);
+    expect(projects.map((item) => item.id)).toEqual(["led"]);
+  });
+
   it("hydrates project status, roles, labels, links, and project mutations", async () => {
     const appConfig = config(":memory:");
     const connection = <T>(nodes: T[]) => ({

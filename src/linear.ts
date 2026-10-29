@@ -115,6 +115,7 @@ export type IssueQuery = {
 
 export type ProjectQuery = {
   teamName?: string;
+  ledByViewer?: boolean;
   includeArchived?: boolean;
   includeLabels?: boolean;
   includeExternalLinks?: boolean;

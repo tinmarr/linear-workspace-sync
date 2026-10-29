@@ -96,6 +96,7 @@ export class ReconciliationEngine {
       try {
         const projects = await pair.external.listProjects({
           teamName: pair.externalConfig.teamName,
+          ledByViewer: true,
           includeArchived: false,
           includeLabels: true,
           includeExternalLinks: true,

@@ -82,6 +82,7 @@ export class FakeWorkspace implements LinearWorkspace {
     this.projectQueries.push(query);
     return [...this.projects.values()]
       .filter((project) => query.includeArchived || !project.archived)
+      .filter((project) => !query.ledByViewer || project.leadAssigned)
       .map((project) => structuredClone(project));
   }
 

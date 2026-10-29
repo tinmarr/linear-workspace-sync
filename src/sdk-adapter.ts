@@ -241,9 +241,10 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       key: this.key,
       team: query.teamName,
     });
-    const filter: LinearDocument.ProjectFilter = query.teamName
-      ? { accessibleTeams: { some: { name: { eq: query.teamName } } } }
-      : {};
+    const filter: LinearDocument.ProjectFilter = {
+      ...(query.teamName ? { accessibleTeams: { some: { name: { eq: query.teamName } } } } : {}),
+      ...(query.ledByViewer ? { lead: { id: { eq: this.viewerId } } } : {}),
+    };
     const projects = await all(this.client.projects({
       filter,
       includeArchived: query.includeArchived ?? false,
@@ -252,6 +253,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     const result = await Promise.all(
       projects
         .filter((project) => query.includeArchived || (!project.archivedAt && !project.trashed))
+        .filter((project) => !query.ledByViewer || project.leadId === this.viewerId)
         .map((project) => this.toLinearProject(project, {
           includeLabels: query.includeLabels ?? true,
           includeExternalLinks: query.includeExternalLinks ?? true,
