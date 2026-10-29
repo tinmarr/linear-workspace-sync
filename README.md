@@ -2,7 +2,21 @@
 
 Periodic synchronization between a personal Linear workspace and one or more external workspaces. The supported deployment is a rootless Podman container managed by a systemd user service and timer.
 
-The sync includes explicitly routed projects as well as issues. A project uses the external workspace's `routing_label` as a project label, and an eligible synchronized issue can bring in its external project. Project links, project resources, issue resources, core project fields, milestones, and the authenticated user's lead or member role are synchronized independently from issue mappings. Mapped issue milestone membership is synchronized when the issue, project, and milestone are all mapped. Resources are matched by URL, and the special personal link that identifies a mapped issue or project is kept out of resource synchronization.
+The sync includes explicitly routed projects as well as issues. A project uses the external workspace's `routing_label` as a project label. External projects led by the authenticated user are discovered even without issues, and an eligible synchronized issue can also bring in its external project. Project links, project resources, issue resources, core project fields, milestones, and the authenticated user's lead or member role are synchronized independently from issue mappings. Project dependencies synchronize when both projects are mapped; milestone anchors also require mapped milestones. Mapped issue milestone membership is synchronized when the issue, project, and milestone are all mapped. Resources are matched by URL, and the special personal link that identifies a mapped issue or project is kept out of resource synchronization.
+
+## Linear API limits
+
+Linear applies separate hourly request and query-complexity limits. Its published limits are:
+
+| Authentication | Requests per hour | Complexity points per hour | Scope |
+| --- | ---: | ---: | --- |
+| API key | 2,500 | 3,000,000 | Authenticated user |
+| OAuth app | 5,000 | 2,000,000 | User or app user |
+| Unauthenticated | 600 | 100,000 | IP address |
+
+A single query is limited to 10,000 complexity points. API keys belonging to the same user share that user's quota, and some operations have lower endpoint-specific limits. Linear uses a leaky bucket, so quota refills continuously. Check the `X-RateLimit-Requests-*`, `X-RateLimit-Complexity-*`, and, where applicable, `X-RateLimit-Endpoint-Requests-*` response headers for current limits and remaining capacity. Leave a buffer for other activity and stop before reaching the limits, especially when running `pnpm dev` against live production workspaces.
+
+Linear may change these limits or grant higher ones. See [Linear's rate limiting documentation](https://linear.app/developers/rate-limiting) for current details and rate-limit error handling.
 
 ## Development
 
@@ -10,7 +24,6 @@ The sync includes explicitly routed projects as well as issues. A project uses t
 pnpm install
 cp config.example.toml config.toml
 pnpm typecheck
-pnpm test
 pnpm build
 ```
 

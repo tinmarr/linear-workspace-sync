@@ -11,6 +11,7 @@ import type { ExternalIssueLink, IssueCreateInput, IssueUpdate, LinearIssue, Lin
 import { logEvent } from "./log.js";
 import { issueMappingKey, projectMappingKey } from "./keys.js";
 import { RelationshipSynchronizer } from "./relationship-sync.js";
+import { syncProjectRelationships } from "./project-relationship-sync.js";
 import {
   copyResources,
   resourceSnapshots,
@@ -92,6 +93,27 @@ export class ReconciliationEngine {
       broken: 0,
     };
     this.addProjectResult(result, projectRun.result);
+    for (const pair of this.workspacePairs()) {
+      try {
+        const projectIds = await pair.external.listLedProjectIds(pair.externalConfig.teamName);
+        for (const projectId of projectIds) {
+          if (context.projectContext.processedMappingKeys.has(projectMappingKey(pair.externalConfig.key, projectId))) {
+            this.state.clearFailure(`workspace:project:${pair.externalConfig.key}:${projectId}`, "__list__");
+            continue;
+          }
+          try {
+            const outcome = await projectSynchronizer.ensureInboundProject(pair, projectId, context.projectContext);
+            this.addProjectResult(result, outcome.result);
+            this.state.clearFailure(`workspace:project:${pair.externalConfig.key}:${projectId}`, "__list__");
+          } catch (error: unknown) {
+            this.handleWorkspaceFailure(`project:${pair.externalConfig.key}:${projectId}`, error);
+          }
+        }
+        this.state.clearFailure(`workspace:projects:${pair.externalConfig.key}`, "__list__");
+      } catch (error: unknown) {
+        this.handleWorkspaceFailure(`projects:${pair.externalConfig.key}`, error);
+      }
+    }
     await this.discoverExternalIssues(context, initial);
 
     for (const issue of personalIssues) {
@@ -279,6 +301,18 @@ export class ReconciliationEngine {
         context.externalIssues.get(pair.externalConfig.key) ?? new Map(),
         pair.externalConfig.key,
       );
+    }
+
+    let personalProjectRelations: Awaited<ReturnType<LinearWorkspace["listProjectRelations"]>> | undefined;
+    for (const pair of this.workspacePairs()) {
+      if (this.state.listProjectMappings().filter((mapping) => mapping.active && mapping.externalWorkspaceKey === pair.externalConfig.key).length < 2) continue;
+      try {
+        personalProjectRelations ??= await this.personal.listProjectRelations();
+        await syncProjectRelationships(this.personal, pair.external, this.state, pair.externalConfig.key, personalProjectRelations);
+        this.state.clearFailure(`workspace:project-relationships:${pair.externalConfig.key}`, "__list__");
+      } catch (error: unknown) {
+        this.handleWorkspaceFailure(`project-relationships:${pair.externalConfig.key}`, error);
+      }
     }
 
     for (const pair of this.workspacePairs()) {

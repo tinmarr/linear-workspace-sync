@@ -2,7 +2,9 @@
 
 This context defines the language for synchronizing a personal Linear workspace with external workspaces.
 
-## Synchronization
+## Language
+
+### Synchronization
 
 **Personal workspace**:
 The user's central Linear workspace that coordinates synchronized work across all connected workspaces.
@@ -37,7 +39,7 @@ A personal-workspace label that controls or communicates the current synchroniza
 _Avoid_: sync flag, sync metadata
 
 **Sync-control label**:
-A `sync:*` label used by the engine or the user to control or communicate synchronization state in the personal workspace. Missing sync-control labels may be created automatically.
+A label that controls or communicates synchronization state in the personal workspace.
 _Avoid_: system label, engine label
 
 **Manual mapping**:
@@ -49,7 +51,7 @@ A link on a personal issue that identifies the one external issue paired with it
 _Avoid_: reciprocal link, backlink
 
 **Link precedence**:
-When a personal issue contains a valid external issue link, that link determines or recovers the sync mapping and takes precedence over every label-based mapping or creation decision. The matching personal routing label is maintained from the linked external workspace.
+The priority given to a valid personal sync link over label-based mapping or creation decisions.
 _Avoid_: label precedence, create-first behavior
 
 **Inbound issue**:
@@ -85,7 +87,7 @@ An issue excluded from synchronization and inbound discovery regardless of its s
 _Avoid_: completed issue, inactive issue
 
 **Status mapping**:
-A one-to-one correspondence between workflow states in two workspaces, resolved by exact state-name match by default and overridable through a bidirectional sync configuration.
+A correspondence between workflow states in two workspaces.
 _Avoid_: status translation, workflow guess
 
 **Sync notification**:
@@ -101,11 +103,11 @@ An ordinary issue attachment or project external link synchronized by URL and di
 _Avoid_: synced attachment, resource mirror
 
 **Workspace-local metadata**:
-Issue or project information that remains owned by each workspace and is not overwritten by synchronization, including ordinary labels, team, cycle, documents, integrations, and comments. Assignee is initialized in both workspaces when a personal issue creates a new external mapping, then reflected one way from external to personal. Native issue relationships and managed resources are governed separately by their synchronization rules.
+Issue or project information owned by its workspace and excluded from ordinary synchronization, such as labels, team, cycle, documents, integrations, and comments.
 _Avoid_: unsupported metadata, local-only field
 
 **Assignee reflection**:
-The user's assignee state on the external issue is reflected on the personal issue: outbound creation assigns the user in both workspaces, external assignment assigns the personal issue to the user, and external unassignment clears that personal assignment. Personal assignee changes do not update the external issue after creation.
+The one-way reflection of the user's external issue assignment on the corresponding personal issue.
 _Avoid_: assignee synchronization, bidirectional assignment
 
 **Orphaned mapping**:
@@ -120,43 +122,11 @@ _Avoid_: duplicate personal issue, reimported task
 A periodic pass that compares eligible issues and established mappings across workspaces, applies safe changes, and records unresolved conditions.
 _Avoid_: polling tick, sync cycle
 
-**Initial reconciliation**:
-The first full pass over configured workspaces and existing assigned work, performed before incremental periodic runs begin.
-_Avoid_: first sync, bootstrap poll
-
-**Sync state**:
-Rebuildable engine state that caches mappings, prior synchronized values, initialization progress, and unresolved conditions across process runs without becoming the source of truth for issues.
-_Avoid_: authoritative database, in-memory state, timer state
-
-**State rebuild**:
-The process of reconstructing sync state from Linear issues, personal links, sync labels, and configuration when the local state database is absent at startup.
-_Avoid_: database restore, data migration
-
-**Reconciliation lock**:
-The single-run guard that prevents overlapping reconciliation runs from changing the same mappings concurrently.
-_Avoid_: timer lock, process lock
-
 **Creation destination**:
 The explicitly configured team where the engine creates a new issue in a workspace.
 _Avoid_: default team, inferred destination
 
-**Workspace configuration**:
-The deterministic set of identifiers and rules that describes a connected workspace, its creation team, and its sync labels or mappings.
-_Avoid_: workspace guess, runtime discovery
-
-**Deployment configuration**:
-The non-secret TOML configuration that defines connected workspaces, creation teams, sync label text, personal labels, status overrides, polling, and state paths.
-_Avoid_: database configuration, environment config
-
-**Workspace credential**:
-A secret environment-provided credential used to access one configured Linear workspace.
-_Avoid_: database secret, checked-in token
-
-**Text-matched label**:
-A configured Linear label identified by its exact text within a workspace rather than by an internal identifier.
-_Avoid_: label ID, fuzzy label match
-
-## Issue relationships
+### Issue relationships
 
 **Issue relationship**:
 A native Linear connection between two issues, such as related, blocks, duplicate, or parent-child.
@@ -173,17 +143,17 @@ An issue relationship that synchronization has copied or is tracking between cor
 **Relationship synchronization**:
 The synchronization of native issue relationships between corresponding issues, including parent-child hierarchy, dependencies, related issues, and duplicate links.
 
-## Projects
+### Projects
 
 **Project**:
 A Linear collection of issues organized around a shared goal, with its own lifecycle, dates, priority, description, and user assignments.
 
 **Project mapping**:
-The managed relationship between a personal project and an external project that represent the same project in one external workspace. It is treated like other synchronized relationships and remains independent after an issue has triggered or established it.
+The managed relationship between a personal project and an external project that represent the same project in one external workspace.
 _Avoid_: project mirror, project association
 
 **Project link**:
-A link on a personal project that identifies the external project paired with it and takes precedence over label-based creation or discovery decisions.
+A link on a personal project that identifies the external project paired with it.
 _Avoid_: project backlink, project URL marker
 
 **Project routing**:
@@ -191,19 +161,19 @@ The personal-project signal that opts a project into synchronization with one ex
 _Avoid_: project import flag, project destination guess
 
 **Project sync trigger**:
-An explicit personal project route or an otherwise eligible inbound issue that belongs to an external project. A trigger may establish a project mapping, but issues do not control that mapping afterward.
+A personal project route, an external project lead assignment, or an eligible inbound issue that can establish a project mapping.
 _Avoid_: project sync dependency, issue-driven project lifecycle
 
 **Inbound project trigger**:
-An otherwise eligible inbound issue whose external project is not yet represented personally and therefore causes that project to be brought into the personal workspace.
-_Avoid_: project-wide import, automatic project discovery
+An external project lead assignment or an eligible inbound issue belonging to an external project that makes the project eligible for representation in the personal workspace.
+_Avoid_: project-wide import
 
 **Project field**:
 A project attribute synchronized between mapped projects for the MVP: name, description, status, priority, start date, or target date.
 _Avoid_: project metadata, project mirror field
 
 **Project issue membership**:
-The relationship that places a mapped issue in a mapped project and is synchronized only when both the issue and project mappings exist. Its additions, removals, and latest-edit behavior follow the managed relationship rules used for subissues and native issue relationships.
+The relationship that places a mapped issue in a mapped project.
 _Avoid_: project assignment, issue grouping
 
 **Project milestone**:
@@ -211,11 +181,11 @@ A named phase or checkpoint belonging to a project, with its own description, ta
 _Avoid_: project phase, project checkpoint
 
 **Milestone mapping**:
-The managed relationship between a milestone on a personal project and the corresponding milestone on an external project in one mapped workspace. The relationship is identified by persisted sync state and may be recovered by exact name within the corresponding mapped projects.
+The managed relationship between a milestone on a personal project and its counterpart in an external workspace.
 _Avoid_: milestone mirror, milestone pairing
 
 **Milestone issue membership**:
-The relationship that places a mapped issue in a mapped project milestone and is synchronized only when the issue, project, and milestone mappings all exist. Its additions, removals, and latest-edit behavior follow the managed relationship rules used for other issue relationships.
+The relationship that places a mapped issue in a mapped project milestone.
 _Avoid_: milestone assignment, issue milestone grouping
 
 **Milestone synchronization**:
@@ -227,13 +197,13 @@ The authenticated user's role on a project, including project lead or project me
 _Avoid_: project ownership, project responsibility
 
 **Project status mapping**:
-A separate correspondence between project lifecycle statuses in two workspaces, using known hard-coded correspondences when available and exact status-name matching otherwise.
+A correspondence between project lifecycle statuses in two workspaces.
 _Avoid_: workflow status mapping, issue status mapping, project state guess
 
 **Independent project synchronization**:
-The rule that a project mapping manages its own fields, assignments, and lifecycle after creation; an issue may trigger project creation but cannot later control the project mapping.
+The synchronization of a project mapping independently of the issues that may have triggered its creation.
 _Avoid_: issue-driven project sync, derived project mapping
 
 **Orphaned project mapping**:
-A project mapping whose external project is unavailable. Archived projects are ignored silently, without a broken marker, notification, or automatic issue mutation.
+A project mapping whose external project is unavailable.
 _Avoid_: deleted project mapping, missing project

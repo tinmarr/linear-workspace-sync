@@ -325,6 +325,14 @@ export class SyncState {
         .run(previousPersonalProjectId, mapping.externalWorkspaceKey);
       this.db
         .prepare(
+          `DELETE FROM project_relationship_snapshots
+            WHERE external_workspace_key = ?
+              AND (json_extract(value_json, '$.input.projectId') = ?
+                OR json_extract(value_json, '$.input.relatedProjectId') = ?)`,
+        )
+        .run(mapping.externalWorkspaceKey, previousPersonalProjectId, previousPersonalProjectId);
+      this.db
+        .prepare(
           `DELETE FROM project_membership_snapshots
             WHERE external_workspace_key = ? AND personal_project_id = ?`,
         )
@@ -642,6 +650,16 @@ export class SyncState {
            value_json = excluded.value_json`,
       )
       .run(snapshot.id, externalWorkspaceKey, JSON.stringify(snapshot));
+  }
+
+  public listProjectRelationshipStates(workspace: WorkspaceKey): Array<{ key: string; value: string }> {
+    return this.db.prepare("SELECT relation_key AS key, value_json AS value FROM project_relationship_snapshots WHERE external_workspace_key = ?").all(workspace) as Array<{ key: string; value: string }>;
+  }
+
+  public putProjectRelationshipState(workspace: WorkspaceKey, key: string, value: string): void {
+    this.db.prepare(`INSERT INTO project_relationship_snapshots(external_workspace_key, relation_key, value_json)
+      VALUES (?, ?, ?) ON CONFLICT(external_workspace_key, relation_key) DO UPDATE SET value_json = excluded.value_json`)
+      .run(workspace, key, value);
   }
 
   public getRelationshipState(
@@ -997,6 +1015,13 @@ export class SyncState {
         broken INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (personal_project_id, external_workspace_key),
         UNIQUE (external_workspace_key, external_project_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS project_relationship_snapshots (
+        external_workspace_key TEXT NOT NULL,
+        relation_key TEXT NOT NULL,
+        value_json TEXT NOT NULL,
+        PRIMARY KEY (external_workspace_key, relation_key)
       );
 
       CREATE TABLE IF NOT EXISTS project_snapshots (

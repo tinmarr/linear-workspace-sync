@@ -22,6 +22,8 @@ import type {
   LinearWorkspace,
   ProjectCreateInput,
   ProjectQuery,
+  ProjectRelation,
+  ProjectRelationInput,
   ProjectUpdate,
   MilestoneCreateInput,
   MilestoneUpdate,
@@ -241,9 +243,10 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       key: this.key,
       team: query.teamName,
     });
-    const filter: LinearDocument.ProjectFilter = query.teamName
-      ? { accessibleTeams: { some: { name: { eq: query.teamName } } } }
-      : {};
+    const filter: LinearDocument.ProjectFilter = {
+      ...(query.teamName ? { accessibleTeams: { some: { name: { eq: query.teamName } } } } : {}),
+      ...(query.ledByViewer ? { lead: { id: { eq: this.viewerId } } } : {}),
+    };
     const projects = await all(this.client.projects({
       filter,
       includeArchived: query.includeArchived ?? false,
@@ -252,6 +255,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     const result = await Promise.all(
       projects
         .filter((project) => query.includeArchived || (!project.archivedAt && !project.trashed))
+        .filter((project) => !query.ledByViewer || project.leadId === this.viewerId)
         .map((project) => this.toLinearProject(project, {
           includeLabels: query.includeLabels ?? true,
           includeExternalLinks: query.includeExternalLinks ?? true,
@@ -261,6 +265,16 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     for (const project of result) this.cacheProject(project);
     logEvent("linear_projects_discovered", { workspace: this.config.name, count: result.length });
     return result;
+  }
+
+  public async listLedProjectIds(teamName: string): Promise<string[]> {
+    const projects = await all(this.client.projects({
+      filter: { accessibleTeams: { some: { name: { eq: teamName } } }, lead: { id: { eq: this.viewerId } } },
+      includeArchived: false,
+      first: 100,
+    }));
+    return projects.filter((project) => !project.archivedAt && !project.trashed && project.leadId === this.viewerId)
+      .map((project) => project.id);
   }
 
   public async getProject(projectId: string, includeArchived = false): Promise<LinearProject | null> {
@@ -516,6 +530,33 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     if (!payload.success) throw new Error(`Linear failed to delete project milestone ${milestoneId}`);
     this.clearProjectMilestoneCache();
     logEvent("linear_project_milestone_deleted", { workspace: this.config.name, milestoneId });
+  }
+
+  public async listProjectRelations(): Promise<ProjectRelation[]> {
+    const relations = await all(this.client.projectRelations({ first: 100, includeArchived: false }));
+    return relations.filter((relation) => !relation.archivedAt).map((relation) => this.toProjectRelation(relation));
+  }
+
+  public async createProjectRelation(input: ProjectRelationInput): Promise<ProjectRelation> {
+    const payload = await this.client.createProjectRelation(input);
+    const relation = await payload.projectRelation;
+    if (!relation) throw new Error("Linear returned no project relation after creation");
+    return this.toProjectRelation(relation);
+  }
+
+  public async deleteProjectRelation(relationId: string): Promise<void> {
+    const payload = await this.client.deleteProjectRelation(relationId);
+    if (!payload.success) throw new Error(`Linear failed to delete project relation ${relationId}`);
+  }
+
+  private toProjectRelation(relation: Awaited<ReturnType<LinearClient["projectRelation"]>>): ProjectRelation {
+    return {
+      id: relation.id, projectId: relation.projectId ?? "", relatedProjectId: relation.relatedProjectId ?? "",
+      type: relation.type, anchorType: relation.anchorType, relatedAnchorType: relation.relatedAnchorType,
+      ...(relation.projectMilestoneId ? { projectMilestoneId: relation.projectMilestoneId } : {}),
+      ...(relation.relatedProjectMilestoneId ? { relatedProjectMilestoneId: relation.relatedProjectMilestoneId } : {}),
+      updatedAt: this.timestamp(relation.updatedAt),
+    };
   }
 
   public async createIssueRelation(input: IssueRelationCreateInput): Promise<IssueRelationSnapshot> {
