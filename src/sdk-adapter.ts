@@ -731,7 +731,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       externalLinks: externalLinks.flatMap((link: SdkProjectLink) => {
         if (!includeExternalLinks) return [];
         const syncLink = this.externalProjectLinkForUrl(link.url);
-        return syncLink ? [syncLink] : [];
+        return syncLink ? [{ ...syncLink, id: link.id }] : [];
       }),
       resources: includeResources
         ? externalLinks

@@ -223,23 +223,42 @@ export class ProjectSynchronizer {
     context: ProjectSyncContext,
   ): Promise<ProjectSyncResult> {
     const result = this.emptyResult();
-    const links = personalProject.externalLinks;
-    const linkedWorkspaces = new Set<WorkspaceKey>();
-    for (const link of links) {
-      if (linkedWorkspaces.has(link.workspaceKey)) {
-        await this.markProjectBroken(personalProject, link.workspaceKey, "multiple-external-links", "Multiple external project links for one workspace make this mapping ambiguous.");
-        result.broken++;
-        continue;
-      }
-      linkedWorkspaces.add(link.workspaceKey);
-      const pair = this.getPair(link.workspaceKey);
+    const linksByWorkspace = new Map<WorkspaceKey, ExternalProjectLink[]>();
+    for (const link of personalProject.externalLinks) {
+      const links = linksByWorkspace.get(link.workspaceKey) ?? [];
+      links.push(link);
+      linksByWorkspace.set(link.workspaceKey, links);
+    }
+    const linkedWorkspaces = new Set(linksByWorkspace.keys());
+    for (const [workspaceKey, links] of linksByWorkspace) {
+      const pair = this.getPair(workspaceKey);
       if (!pair) {
-        await this.markProjectBroken(personalProject, link.workspaceKey, "unknown-linked-workspace", "The linked external project workspace is not configured.");
+        await this.markProjectBroken(personalProject, workspaceKey, "unknown-linked-workspace", "The linked external project workspace is not configured.");
         result.broken++;
         continue;
       }
-      const externalProject = await pair.external.getProject(link.projectId, true);
+      // Resolve each distinct URL identifier once, including aliases of the same project.
+      const resolved = new Map<string, LinearProject | null>();
+      for (const link of links) {
+        if (!resolved.has(link.projectId)) {
+          resolved.set(link.projectId, await pair.external.getProject(link.projectId, true));
+        }
+      }
+      const targets = new Set(links.map((link) => resolved.get(link.projectId)?.id ?? link.projectId));
+      if (targets.size > 1) {
+        await this.markProjectBroken(personalProject, workspaceKey, "multiple-external-links", "Multiple external project links for one workspace make this mapping ambiguous.");
+        result.broken++;
+        continue;
+      }
+      const externalProject = resolved.get(links[0].projectId);
       if (!externalProject || externalProject.archived) continue;
+      links[0].projectId = externalProject.id;
+      for (const duplicate of links.slice(1)) {
+        if (!duplicate.id || duplicate.id === links[0].id) continue;
+        await this.personal.removeProjectResource(duplicate.id);
+        personalProject.externalLinks = personalProject.externalLinks.filter((link) => link.id !== duplicate.id);
+        logEvent("duplicate_project_link_removed", { projectId: personalProject.id, workspaceKey, linkId: duplicate.id });
+      }
       const existing = this.state.findProjectMappingByExternal(pair.externalConfig.key, externalProject.id);
       if (existing && existing.personalProjectId !== personalProject.id) {
         await this.markProjectConflict(personalProject, pair.externalConfig.key, ["mapping"]);

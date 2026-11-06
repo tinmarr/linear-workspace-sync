@@ -396,6 +396,11 @@ export class FakeWorkspace implements LinearWorkspace {
 
   public async removeProjectResource(resourceId: string): Promise<void> {
     for (const project of this.projects.values()) {
+      const linkIndex = project.externalLinks.findIndex((link) => link.id === resourceId);
+      if (linkIndex >= 0) {
+        project.externalLinks.splice(linkIndex, 1);
+        return;
+      }
       const index = project.resources.findIndex((resource) => resource.id === resourceId);
       if (index < 0) continue;
       project.resources.splice(index, 1);

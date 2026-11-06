@@ -33,6 +33,7 @@ export type LinearIssue = Omit<IssueSnapshot, "resources"> & {
 export type LinearMilestone = MilestoneSnapshot;
 
 export type ExternalProjectLink = {
+  id?: string;
   workspaceKey: WorkspaceKey;
   projectId: string;
   projectUrl: string;

@@ -724,6 +724,32 @@ describe("reconciliation", () => {
     state.close();
   });
 
+  it.each(["same-url", "alias", "alias-first", "different-project"])("handles multiple project links: %s", async (variant) => {
+    const { personal, work, state, engine } = setup();
+    const target = project("work", {
+      id: "target", url: "https://linear.app/work/project/target", name: "Shared project", statusName: "Backlog",
+    });
+    work.projects.set("target", target);
+    work.projects.set("alias", { ...target });
+    work.projects.set("other", { ...target, id: "other", url: "https://linear.app/work/project/other" });
+    const secondId = variant === "same-url" ? "target" : variant === "alias" || variant === "alias-first" ? "alias" : "other";
+    personal.projects.set("personal-project", project("personal", {
+      id: "personal-project", url: "https://linear.app/personal/project/personal-project", name: "Shared project", statusName: "Backlog",
+      externalLinks: [
+        { id: "keep-link", workspaceKey: "work", projectId: "target", projectUrl: target.url },
+        { id: "duplicate-link", workspaceKey: "work", projectId: secondId, projectUrl: `https://linear.app/work/project/${secondId}` },
+      ],
+    }));
+    if (variant === "alias-first") personal.projects.get("personal-project")!.externalLinks.reverse();
+    try {
+      const result = await engine.run(true);
+      expect(result.broken).toBe(variant === "different-project" ? 1 : 0);
+      expect(personal.projects.get("personal-project")?.externalLinks).toHaveLength(variant === "different-project" ? 2 : 1);
+      expect(state.getProjectMapping("personal-project", "work")?.broken).toBe(variant === "different-project" ? undefined : false);
+      expect(personal.projects.get("personal-project")?.labelNames.includes("sync:broken")).toBe(variant === "different-project");
+    } finally { state.close(); }
+  });
+
   it("uses an explicit project link before a project routing label", async () => {
     const { personal, work, state, engine } = setup();
     work.projects.set("linked-project", project("work", {
