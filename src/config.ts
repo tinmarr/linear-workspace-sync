@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { parse } from "@iarna/toml";
 import {
-  DEFAULT_NOTIFICATION_ACCESS_TOKEN_ENV,
   type AppConfig,
   type WorkspaceConfig,
 } from "./domain.js";
@@ -19,7 +18,8 @@ type RawWorkspace = {
 type RawConfig = {
   poll_interval_seconds?: number;
   database_path?: string;
-  notification_access_token_env?: string;
+  notification_client_id_env?: string;
+  notification_client_secret_env?: string;
   personal?: RawWorkspace;
   external?: Record<string, RawWorkspace>;
   sync?: {
@@ -122,8 +122,8 @@ export async function loadConfig(path: string): Promise<AppConfig> {
   return {
     pollIntervalSeconds,
     databasePath: required(raw.database_path, "database_path"),
-    notificationAccessTokenEnv:
-      raw.notification_access_token_env?.trim() || DEFAULT_NOTIFICATION_ACCESS_TOKEN_ENV,
+    notificationClientIdEnv: raw.notification_client_id_env?.trim() || "LINEAR_NOTIFICATION_CLIENT_ID",
+    notificationClientSecretEnv: raw.notification_client_secret_env?.trim() || "LINEAR_NOTIFICATION_CLIENT_SECRET",
     personal: workspaceConfig("personal", raw.personal, {}),
     external,
     syncLabels: {

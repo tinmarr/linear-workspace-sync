@@ -16,6 +16,7 @@ import type {
   ProjectCreateInput,
   ProjectUpdate,
 } from "./linear.js";
+import { formatConflictDiff } from "./conflict-diff.js";
 import { logEvent } from "./log.js";
 import { projectMappingKey } from "./keys.js";
 import { MilestoneSynchronizer } from "./milestone-sync.js";
@@ -266,7 +267,12 @@ export class ProjectSynchronizer {
         continue;
       }
       await this.ensurePersonalProjectLinkAndLabel(personalProject, pair, externalProject);
-      this.state.upsertProjectMapping(this.toMapping(personalProject, pair.externalConfig, externalProject));
+      // Preserve recorded conflict state so label removal can select the personal values.
+      this.state.upsertProjectMapping({
+        ...this.toMapping(personalProject, pair.externalConfig, externalProject),
+        conflict: existing?.conflict ?? false,
+        broken: existing?.broken ?? false,
+      });
       const outcome = await this.processMapping(personalProject, pair, externalProject, false, context.processedMappingKeys);
       this.addResult(result, outcome);
       result.updatedMappings++;
@@ -330,13 +336,15 @@ export class ProjectSynchronizer {
     await this.ensurePersonalProjectLinkAndLabel(personalProject, pair, externalProject);
     const mapping = this.state.getProjectMapping(personalProject.id, pair.externalConfig.key);
     if (!mapping) this.state.upsertProjectMapping(this.toMapping(personalProject, pair.externalConfig, externalProject));
+    const personalWins = mapping?.conflict === true
+      && !personalProject.labelNames.includes(this.config.syncLabels.conflict);
     const milestoneResult = await this.milestoneSynchronizer.syncProject(personalProject, externalProject, pair);
     result.conflicts += milestoneResult.conflicts;
     result.broken += milestoneResult.broken;
     const currentPersonal = this.toSnapshot(personalProject);
     const currentExternal = this.toSnapshot(externalProject);
     const previous = this.state.getProjectSnapshot(personalProject.id, pair.externalConfig.key);
-    const resourceDirection = resourceSyncDirection(
+    const resourceDirection = personalWins ? "personal-to-external" : resourceSyncDirection(
       personalProject.resources,
       externalProject.resources,
       previous?.resources,
@@ -368,8 +376,8 @@ export class ProjectSynchronizer {
     const allConflicts = resourceDirection === "conflict"
       ? [...conflicts, "resources"]
       : conflicts;
-    if (allConflicts.length > 0) {
-      await this.markProjectConflict(personalProject, pair.externalConfig.key, allConflicts);
+    if (allConflicts.length > 0 && !personalWins) {
+      await this.markProjectConflict(personalProject, pair.externalConfig.key, allConflicts, currentPersonal, currentExternal);
       processedMappingKeys.add(processedKey);
       result.conflicts++;
       return result;
@@ -380,7 +388,7 @@ export class ProjectSynchronizer {
     for (const field of PROJECT_FIELD_NAMES) {
       const personalChanged = !this.projectFieldEqual(field, currentPersonal, previous);
       const externalChanged = !this.projectFieldEqual(field, currentExternal, previous);
-      if (personalChanged && !externalChanged) {
+      if (personalWins || (personalChanged && !externalChanged)) {
         const mapped = await this.mapProjectField(field, currentPersonal, pair.external);
         Object.assign(externalChanges, mapped);
       } else if (externalChanged && !personalChanged) {
@@ -804,12 +812,18 @@ export class ProjectSynchronizer {
     personalProject: LinearProject,
     externalWorkspaceKey: WorkspaceKey,
     fields: string[],
+    currentPersonal?: ProjectSnapshot,
+    currentExternal?: ProjectSnapshot,
   ): Promise<void> {
     await this.addProjectLabelIfMissing(personalProject, this.config.syncLabels.conflict);
     this.state.setProjectConflict(personalProject.id, externalWorkspaceKey);
     const fingerprint = fields.slice().sort().join(",");
     await this.state.notifyProject(personalProject.id, externalWorkspaceKey, "conflict", fingerprint, async () => {
-      await this.personal.addPersonalProjectNotification(personalProject.id, `A project sync conflict needs your attention for: ${fields.join(", ")}.`);
+      const externalName = this.config.external.find((workspace) => workspace.key === externalWorkspaceKey)?.workspaceName ?? externalWorkspaceKey;
+      const diff = currentPersonal && currentExternal
+        ? formatConflictDiff(fields, currentPersonal, currentExternal, this.config.personal.workspaceName, externalName) : "";
+      await this.personal.addPersonalProjectNotification(personalProject.id,
+        `A project sync conflict needs your attention for: ${fields.join(", ")}.${diff ? `\n\n${diff}\n\nEdit this personal project to keep the desired values, then remove ${this.config.syncLabels.conflict} to overwrite the external project.` : ""}`);
     });
   }
 
