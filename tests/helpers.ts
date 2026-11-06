@@ -19,6 +19,8 @@ import type {
   MilestoneUpdate,
   ProjectCreateInput,
   ProjectQuery,
+  ProjectRelation,
+  ProjectRelationInput,
   ProjectUpdate,
 } from "../src/linear.js";
 
@@ -76,6 +78,20 @@ export class FakeWorkspace implements LinearWorkspace {
     return issue
       ? { ...structuredClone(issue), relationshipsLoaded: includeRelationships }
       : null;
+  }
+
+  public async listLedProjectIds(): Promise<string[]> {
+    return [...this.projects.values()].filter((project) => project.leadAssigned && !project.archived).map((project) => project.id);
+  }
+
+  public async listProjectRelations(): Promise<ProjectRelation[]> { return []; }
+
+  public async createProjectRelation(_input: ProjectRelationInput): Promise<ProjectRelation> {
+    throw new Error("Unexpected project relationship creation in focused regression tests");
+  }
+
+  public async deleteProjectRelation(_id: string): Promise<void> {
+    throw new Error("Unexpected project relationship deletion in focused regression tests");
   }
 
   public async listProjects(query: ProjectQuery): Promise<LinearProject[]> {

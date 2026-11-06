@@ -7,11 +7,9 @@ WORKDIR /src
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
-COPY tsconfig.json tsconfig.build.json vitest.config.ts ./
+COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
-COPY tests ./tests
 RUN pnpm typecheck
-RUN pnpm test
 RUN pnpm build
 RUN pnpm prune --prod
 

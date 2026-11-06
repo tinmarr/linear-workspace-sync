@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'vitest';
+import { test } from 'node:test';
 import { ReconciliationEngine } from '../src/reconcile.js';
 import { SyncState } from '../src/state.js';
 import { loadConfig } from '../src/config.js';

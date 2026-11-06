@@ -2,7 +2,7 @@
 
 Periodic synchronization between a personal Linear workspace and one or more external workspaces. The supported deployment is a rootless Podman container managed by a systemd user service and timer.
 
-The sync includes explicitly routed projects as well as issues. A project uses the external workspace's `routing_label` as a project label, and an eligible synchronized issue can bring in its external project. Project links, project resources, issue resources, core project fields including the short summary and full description, milestones including their descriptions, and the authenticated user's lead or member role are synchronized independently from issue mappings. Mapped issue milestone membership is synchronized when the issue, project, and milestone are all mapped. Resources are matched by URL, and the special personal link that identifies a mapped issue or project is kept out of resource synchronization.
+The sync includes explicitly routed projects as well as issues. A project uses the external workspace's `routing_label` as a project label. External projects led by the authenticated user are discovered even without issues, and an eligible synchronized issue can also bring in its external project. Project links, project resources, issue resources, core project fields including the short summary and full description, milestones including their descriptions, and the authenticated user's lead or member role are synchronized independently from issue mappings. Project dependencies synchronize when both projects are mapped; milestone anchors also require mapped milestones. Mapped issue milestone membership is synchronized when the issue, project, and milestone are all mapped. Resources are matched by URL, and the special personal link that identifies a mapped issue or project is kept out of resource synchronization.
 
 ## Issue conflicts
 
@@ -11,6 +11,7 @@ Core issue fields use changes since the last successful sync, rather than the is
 When both sides change the same field to different values, the syncer preserves both values and adds `sync:conflict` on the personal issue. To choose the personal issue as the source of truth, edit it to contain the desired values and remove `sync:conflict`. On the next run, its core fields and managed resources overwrite the external issue. A failed overwrite remains pending for retry. Mapping collisions still require correcting the mapping. Project and milestone conflicts continue to require converging the compared values.
 
 Conflict comments identify the affected fields and explain how to resolve an issue conflict. Failed comments are retried on later runs. If the optional notification app token is rejected for authentication, comments fall back to the personal workspace API client. Existing notification records written by older versions may already suppress previously failed comments.
+
 
 ## Linear API limits
 
@@ -31,7 +32,7 @@ Linear may change these limits or grant higher ones. See [Linear's rate limiting
 ```sh
 pnpm install
 cp config.example.toml config.toml
-pnpm test
+pnpm exec tsx --test tests/*.test.ts
 pnpm typecheck
 pnpm build
 ```
