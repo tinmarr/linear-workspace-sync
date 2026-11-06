@@ -53,17 +53,13 @@ test('milestone descriptions sync both ways and can be cleared', async()=>{
  } finally {state.close();}
 });
 
-test('expired notification credentials fall back to personal API client',async()=>{
+test('notification failures from the primary client propagate for retry',async()=>{
  const adapter:any=Object.create(SdkLinearWorkspace.prototype);
  adapter.config={name:'personal'};adapter.viewerUrl='viewer';
  let calls=0;
- adapter.notificationClient={createComment:async()=>{throw new Error('Authentication required, not authenticated');}};
- adapter.client={createComment:async()=>{calls++;return {success:true};}};
- await adapter.addPersonalNotification('p','Conflict');
+ adapter.client={createComment:async()=>{calls++;throw new Error('Authentication required');}};
+ await assert.rejects(adapter.addPersonalNotification('p','Conflict'),/Authentication required/);
  assert.equal(calls,1);
- adapter.notificationClient={createComment:async()=>{throw new Error('Rate limit exceeded');}};
- await assert.rejects(adapter.addPersonalNotification('p','Conflict'),/Rate limit/);
- assert.equal(calls,1);
- adapter.notificationClient={createComment:async()=>({success:false})};
+ adapter.client={createComment:async()=>({success:false})};
  await assert.rejects(adapter.addPersonalNotification('p','Conflict'),/failed to create notification/);
 });

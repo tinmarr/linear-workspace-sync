@@ -1,12 +1,14 @@
 poll_interval_seconds = 300
 database_path = "state/state.db"
-# Optional headless app notification credentials (set both values in the environment).
-# Without client credentials, comments use the personal workspace API key.
+# Optional headless OAuth credentials for all personal-workspace reads and writes.
+# Set both values in the environment. External workspaces keep their API keys.
+# Without these credentials, personal operations also use the personal API key.
 notification_client_id_env = "LINEAR_NOTIFICATION_CLIENT_ID"
 notification_client_secret_env = "LINEAR_NOTIFICATION_CLIENT_SECRET"
 
 [personal]
 name = "personal"
+# Required for one human-identity read per run, even when using OAuth.
 api_key_env = "LINEAR_PERSONAL_API_KEY"
 workspace_name = "Personal"
 team_name = "Personal"

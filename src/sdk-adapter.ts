@@ -27,7 +27,7 @@ import type {
   MilestoneCreateInput,
   MilestoneUpdate,
 } from "./linear.js";
-import { createClientCredentialsNotificationClient, isAuthenticationFailure } from "./notification-auth.js";
+import { createClientCredentialsClient } from "./oauth.js";
 import { logEvent } from "./log.js";
 import { projectMilestoneCacheKey } from "./keys.js";
 
@@ -48,8 +48,24 @@ type SdkProjectMilestone = Awaited<ReturnType<SdkProject["projectMilestones"]>>[
 type SdkTeam = Awaited<ReturnType<LinearClient["team"]>>;
 type SdkLabel = Awaited<ReturnType<LinearClient["issueLabels"]>>["nodes"][number];
 type SdkAttachment = Awaited<ReturnType<LinearClient["attachments"]>>["nodes"][number];
-type SdkViewer = Awaited<LinearClient["viewer"]>;
-type NotificationClient = Pick<LinearClient, "createComment">;
+export type WorkspaceViewer = { id: string; email: string; url: string; organization: { id: string } };
+const VIEWER_QUERY = "query SyncViewer { viewer { id email url organization { id } } }";
+
+export async function createPersonalSdkWorkspace(
+  config: WorkspaceConfig,
+  linkTargets: WorkspaceConfig[],
+  humanClient: LinearClient,
+  appClient?: LinearClient,
+): Promise<SdkLinearWorkspace> {
+  const { viewer } = await humanClient.client.request<{ viewer: WorkspaceViewer }, Record<string, never>>(VIEWER_QUERY);
+  if (appClient) {
+    const app = await appClient.client.request<{ viewer: WorkspaceViewer }, Record<string, never>>(VIEWER_QUERY);
+    if (app.viewer.organization.id !== viewer.organization.id) {
+      throw new Error("Linear OAuth app and personal API key belong to different workspaces");
+    }
+  }
+  return SdkLinearWorkspace.create(config, linkTargets, { client: appClient ?? humanClient, viewer });
+}
 
 export async function all<T>(initial: Promise<Connection<T>>): Promise<T[]> {
   let page = await initial;
@@ -115,7 +131,6 @@ export class SdkLinearWorkspace implements LinearWorkspace {
   public readonly viewerId: string;
   public readonly viewerEmail: string;
   private readonly viewerUrl: string;
-  private readonly notificationClient: NotificationClient;
   private readonly labelIds = new Map<string, string>();
   private readonly teams = new Map<string, SdkTeam>();
   private readonly teamPromises = new Map<string, Promise<SdkTeam>>();
@@ -142,22 +157,24 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     public readonly key: string,
     private readonly config: WorkspaceConfig,
     private readonly client: LinearClient,
-    viewer: SdkViewer,
+    viewer: Pick<WorkspaceViewer, "id" | "email" | "url">,
     private readonly linkTargets: WorkspaceConfig[],
-    notificationClient?: NotificationClient,
   ) {
     this.viewerId = viewer.id;
     this.viewerEmail = viewer.email;
     this.viewerUrl = viewer.url;
-    this.notificationClient = notificationClient ?? client;
   }
 
   public static async create(
     config: WorkspaceConfig,
     linkTargets: WorkspaceConfig[],
-    notificationClient?: NotificationClient,
+    authenticated?: { client: LinearClient; viewer: WorkspaceViewer },
   ): Promise<SdkLinearWorkspace> {
     logEvent("linear_client_creating", { workspace: config.name, key: config.key });
+    if (authenticated) {
+      logEvent("linear_client_ready", { workspace: config.name, key: config.key });
+      return new SdkLinearWorkspace(config.key, config, authenticated.client, authenticated.viewer, linkTargets);
+    }
     const apiKey = process.env[config.apiKeyEnv];
     if (!apiKey) {
       throw new Error(`Missing API key environment variable: ${config.apiKeyEnv}`);
@@ -166,7 +183,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     logEvent("linear_viewer_fetching", { workspace: config.name, key: config.key });
     const viewer = await client.viewer;
     logEvent("linear_client_ready", { workspace: config.name, key: config.key });
-    return new SdkLinearWorkspace(config.key, config, client, viewer, linkTargets, notificationClient);
+    return new SdkLinearWorkspace(config.key, config, client, viewer, linkTargets);
   }
 
   public async listIssues(query: IssueQuery): Promise<LinearIssue[]> {
@@ -180,7 +197,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       archivedAt: { null: true },
       ...(query.excludeCompleted ? { completedAt: { null: true } } : {}),
       ...(query.teamName ? { team: { name: { eq: query.teamName } } } : {}),
-      ...(query.assignedToViewer ? { assignee: { isMe: { eq: true } } } : {}),
+      ...(query.assignedToViewer ? { assignee: { id: { eq: this.viewerId } } } : {}),
     };
     const issues = await all(this.client.issues({ filter, includeArchived: false, first: 100 }));
     logEvent("linear_issue_query_received", { workspace: this.config.name, count: issues.length });
@@ -661,20 +678,9 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     if (!payload.success) throw new Error(`Linear failed to delete issue attachment ${resourceId}`);
   }
 
-  private async createNotification(input: Parameters<NotificationClient["createComment"]>[0]) {
-    try {
-      return await this.notificationClient.createComment(input);
-    } catch (error) {
-      const authenticationFailure = isAuthenticationFailure(error);
-      if (this.notificationClient === this.client || !authenticationFailure) throw error;
-      logEvent("linear_notification_authentication_fallback", { workspace: this.config.name });
-      return this.client.createComment(input);
-    }
-  }
-
   public async addPersonalNotification(issueId: string, message: string): Promise<void> {
     logEvent("linear_personal_notification_adding", { workspace: this.config.name, issueId });
-    const payload = await this.createNotification({ issueId, body: `${this.viewerUrl} ${message}` });
+    const payload = await this.client.createComment({ issueId, body: `${this.viewerUrl} ${message}` });
     if (!payload.success) throw new Error(`Linear failed to create notification for ${issueId}`);
     logEvent("linear_personal_notification_added", { workspace: this.config.name, issueId });
   }
@@ -729,7 +735,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
 
   public async addPersonalProjectNotification(projectId: string, message: string): Promise<void> {
     logEvent("linear_personal_project_notification_adding", { workspace: this.config.name, projectId });
-    const payload = await this.createNotification({
+    const payload = await this.client.createComment({
       projectId,
       body: `${this.viewerUrl} ${message}`,
     });
@@ -1204,19 +1210,18 @@ export async function createSdkWorkspaces(config: AppConfig): Promise<{
   const clientId = process.env[clientIdEnv]?.trim();
   const clientSecret = process.env[clientSecretEnv]?.trim();
   if (Boolean(clientId) !== Boolean(clientSecret)) {
-    throw new Error(`Set both ${clientIdEnv} and ${clientSecretEnv} for Linear notification client credentials`);
+    throw new Error(`Set both ${clientIdEnv} and ${clientSecretEnv} for Linear personal workspace client credentials`);
   }
-  const notificationClient = clientId && clientSecret
-    ? await createClientCredentialsNotificationClient(clientId, clientSecret)
+  const apiKey = process.env[config.personal.apiKeyEnv];
+  if (!apiKey) throw new Error(`Missing API key environment variable: ${config.personal.apiKeyEnv}`);
+  const appClient = clientId && clientSecret
+    ? await createClientCredentialsClient(clientId, clientSecret)
     : undefined;
-  logEvent(
-    notificationClient ? "linear_notification_client_ready" : "linear_notification_client_fallback",
-    { authentication: clientId ? "client_credentials" : "personal" },
-  );
-  const personal = await SdkLinearWorkspace.create(
-    config.personal,
-    config.external,
-    notificationClient,
+  logEvent("linear_personal_authentication", {
+    authentication: appClient ? "client_credentials" : "api_key",
+  });
+  const personal = await createPersonalSdkWorkspace(
+    config.personal, config.external, new LinearClient({ apiKey }), appClient,
   );
   const externalEntries = await Promise.all(
     config.external.map(async (workspace) => [workspace.key, await SdkLinearWorkspace.create(workspace, [])] as const),
