@@ -592,7 +592,9 @@ export class ReconciliationEngine {
       );
     }
     let broken = statusErrors.length;
-    const resourceDirection = resourceSyncDirection(
+    const personalWins = mapping?.conflict === true
+      && !personalIssue.labelNames.includes(this.config.syncLabels.conflict);
+    const resourceDirection = personalWins ? "personal-to-external" : resourceSyncDirection(
       personalIssue.resources,
       externalIssue.resources,
       previous?.resources,
@@ -613,7 +615,7 @@ export class ReconciliationEngine {
     const allConflicts = resourceDirection === "conflict"
       ? [...conflicts, "resources"]
       : conflicts;
-    if (allConflicts.length > 0) {
+    if (allConflicts.length > 0 && !personalWins) {
       await this.markConflict(personalIssue, pair.externalConfig.key, allConflicts);
       processedMappingKeys.add(issueMappingKey(pair.externalConfig.key, externalIssue.id));
       return { conflicts: 1, broken: 0 };
@@ -624,7 +626,7 @@ export class ReconciliationEngine {
     for (const field of CORE_FIELDS) {
       const personalChanged = !this.fieldEqual(field, currentPersonal, previous);
       const externalChanged = !this.fieldEqual(field, currentExternal, previous);
-      if (personalChanged && !externalChanged) {
+      if (personalWins || (personalChanged && !externalChanged)) {
         const mapped = await this.mapFieldToExternal(field, currentPersonal, pair);
         Object.assign(externalChanges, mapped);
       } else if (externalChanged && !personalChanged) {
@@ -875,9 +877,9 @@ export class ReconciliationEngine {
     const other = await this.personal.getIssue(existing.personalIssueId, false);
     if (other) {
       await this.addPersonalLabelIfMissing(other, this.config.syncLabels.conflict);
-      if (this.state.shouldNotify(other.id, pair.externalConfig.key, "conflict", "mapping")) {
+      await this.state.notify(other.id, pair.externalConfig.key, "conflict", "mapping", async () => {
         await this.personal.addPersonalNotification(other.id, "A mapping conflict needs your attention.");
-      }
+      });
     }
   }
 
@@ -889,12 +891,12 @@ export class ReconciliationEngine {
     await this.addPersonalLabelIfMissing(personalIssue, this.config.syncLabels.conflict);
     this.state.setConflict(personalIssue.id, externalWorkspaceKey);
     const fingerprint = fields.slice().sort().join(",");
-    if (this.state.shouldNotify(personalIssue.id, externalWorkspaceKey, "conflict", fingerprint)) {
+    await this.state.notify(personalIssue.id, externalWorkspaceKey, "conflict", fingerprint, async () => {
       await this.personal.addPersonalNotification(
         personalIssue.id,
-        `A sync conflict needs your attention for: ${fields.join(", ")}.`,
+        `A sync conflict needs your attention for: ${fields.join(", ")}. Edit this personal issue to keep the desired values, then remove ${this.config.syncLabels.conflict} to overwrite the external issue.`,
       );
-    }
+    });
   }
 
   private async markBroken(
@@ -908,9 +910,9 @@ export class ReconciliationEngine {
     if (externalWorkspaceKey) {
       this.state.setBroken(personalIssue.id, externalWorkspaceKey, true);
     }
-    if (this.state.shouldNotify(personalIssue.id, "personal", "broken", fingerprint)) {
+    await this.state.notify(personalIssue.id, "personal", "broken", fingerprint, async () => {
       await this.personal.addPersonalNotification(personalIssue.id, message);
-    }
+    });
   }
 
   private async mapFieldToExternal(
@@ -1014,7 +1016,7 @@ export class ReconciliationEngine {
     pair: WorkspaceConfig,
   ): boolean {
     if (field !== "statusName") {
-      return personal[field] === external[field];
+      return this.fieldEqual(field, personal, external);
     }
     const mappings = pair.statusMappings;
     return personal.statusName === external.statusName
@@ -1025,7 +1027,9 @@ export class ReconciliationEngine {
   }
 
   private fieldEqual(field: CoreField, left: IssueSnapshot, right: IssueSnapshot): boolean {
-    return left[field] === right[field];
+    return field === "description"
+      ? (left.description ?? "") === (right.description ?? "")
+      : left[field] === right[field];
   }
 
   private toSnapshot(issue: LinearIssue): IssueSnapshot {

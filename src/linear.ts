@@ -33,6 +33,7 @@ export type LinearIssue = Omit<IssueSnapshot, "resources"> & {
 export type LinearMilestone = MilestoneSnapshot;
 
 export type ExternalProjectLink = {
+  id?: string;
   workspaceKey: WorkspaceKey;
   projectId: string;
   projectUrl: string;
@@ -68,6 +69,7 @@ export type IssueUpdate = Partial<
 };
 
 export type ProjectCreateInput = {
+  content?: string | null;
   name: string;
   description: string | null;
   statusName: string | null;
@@ -80,7 +82,7 @@ export type ProjectCreateInput = {
 
 export type ProjectUpdate = Partial<Pick<
   ProjectSnapshot,
-  "name" | "description" | "statusName" | "priority" | "startDate" | "targetDate"
+  "name" | "description" | "content" | "statusName" | "priority" | "startDate" | "targetDate"
 >> & {
   leadAssigned?: boolean;
   memberAssigned?: boolean;
