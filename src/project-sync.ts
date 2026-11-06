@@ -605,6 +605,7 @@ export class ProjectSynchronizer {
     return {
       name: project.name,
       description: project.description,
+      content: project.content ?? null,
       statusName: project.statusName,
       priority: project.priority,
       startDate: project.startDate,
@@ -679,11 +680,13 @@ export class ProjectSynchronizer {
       return personal.statusName === external.statusName
         || Boolean(personal.statusType && personal.statusType === external.statusType);
     }
-    return personal[field] === external[field];
+    return this.projectFieldEqual(field, personal, external);
   }
 
   private projectFieldEqual(field: ProjectField, left: ProjectSnapshot, right: ProjectSnapshot): boolean {
-    return left[field] === right[field];
+    return field === "description" || field === "content"
+      ? (left[field] ?? "") === (right[field] ?? "")
+      : left[field] === right[field];
   }
 
   private toSnapshot(project: LinearProject): ProjectSnapshot {
@@ -693,6 +696,7 @@ export class ProjectSynchronizer {
       workspaceKey: project.workspaceKey,
       name: project.name,
       description: project.description,
+      content: project.content ?? null,
       statusName: project.statusName,
       statusType: project.statusType,
       priority: project.priority,
@@ -785,9 +789,9 @@ export class ProjectSynchronizer {
     await this.addProjectLabelIfMissing(personalProject, this.config.syncLabels.conflict);
     this.state.setProjectConflict(personalProject.id, externalWorkspaceKey);
     const fingerprint = fields.slice().sort().join(",");
-    if (this.state.shouldNotifyProject(personalProject.id, externalWorkspaceKey, "conflict", fingerprint)) {
+    await this.state.notifyProject(personalProject.id, externalWorkspaceKey, "conflict", fingerprint, async () => {
       await this.personal.addPersonalProjectNotification(personalProject.id, `A project sync conflict needs your attention for: ${fields.join(", ")}.`);
-    }
+    });
   }
 
   private async markProjectBroken(
@@ -798,9 +802,9 @@ export class ProjectSynchronizer {
   ): Promise<void> {
     await this.addProjectLabelIfMissing(personalProject, this.config.syncLabels.broken);
     if (externalWorkspaceKey !== "personal") this.state.setProjectBroken(personalProject.id, externalWorkspaceKey, true);
-    if (this.state.shouldNotifyProject(personalProject.id, externalWorkspaceKey, "broken", fingerprint)) {
+    await this.state.notifyProject(personalProject.id, externalWorkspaceKey, "broken", fingerprint, async () => {
       await this.personal.addPersonalProjectNotification(personalProject.id, message);
-    }
+    });
   }
 
   private async markProjectExternalUnavailable(
@@ -809,9 +813,9 @@ export class ProjectSynchronizer {
   ): Promise<void> {
     await this.addProjectLabelIfMissing(personalProject, this.config.syncLabels.externalUnavailable);
     this.state.setProjectBroken(personalProject.id, mapping.externalWorkspaceKey, true);
-    if (this.state.shouldNotifyProject(personalProject.id, mapping.externalWorkspaceKey, "external-unavailable", mapping.externalProjectId)) {
+    await this.state.notifyProject(personalProject.id, mapping.externalWorkspaceKey, "external-unavailable", mapping.externalProjectId, async () => {
       await this.personal.addPersonalProjectNotification(personalProject.id, "The mapped external project is archived or unavailable.");
-    }
+    });
   }
 
   private async addProjectLabelIfMissing(project: LinearProject, label: string): Promise<void> {

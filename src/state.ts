@@ -876,7 +876,37 @@ export class SyncState {
       .run(broken ? 1 : 0, personalIssueId, externalWorkspaceKey);
   }
 
-  public shouldNotify(
+  public async notify(
+    personalIssueId: string,
+    workspace: WorkspaceKey,
+    code: string,
+    fingerprint: string,
+    send: () => Promise<void>,
+  ): Promise<void> {
+    const sent = this.db.prepare(`SELECT 1 FROM notifications WHERE personal_issue_id = ?
+      AND external_workspace_key = ? AND code = ? AND fingerprint = ?`)
+      .get(personalIssueId, workspace, code, fingerprint);
+    if (sent) return;
+    await send();
+    this.recordNotification(personalIssueId, workspace, code, fingerprint);
+  }
+
+  public async notifyProject(
+    personalProjectId: string,
+    workspace: WorkspaceKey,
+    code: string,
+    fingerprint: string,
+    send: () => Promise<void>,
+  ): Promise<void> {
+    const sent = this.db.prepare(`SELECT 1 FROM project_notifications WHERE personal_project_id = ?
+      AND external_workspace_key = ? AND code = ? AND fingerprint = ?`)
+      .get(personalProjectId, workspace, code, fingerprint);
+    if (sent) return;
+    await send();
+    this.recordProjectNotification(personalProjectId, workspace, code, fingerprint);
+  }
+
+  private recordNotification(
     personalIssueId: string,
     externalWorkspaceKey: WorkspaceKey,
     code: string,
@@ -905,7 +935,7 @@ export class SyncState {
       .run(personalIssueId, externalWorkspaceKey, code);
   }
 
-  public shouldNotifyProject(
+  private recordProjectNotification(
     personalProjectId: string,
     externalWorkspaceKey: WorkspaceKey,
     code: string,

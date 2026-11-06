@@ -53,7 +53,7 @@ describe("sync state", () => {
     rerun.close();
   });
 
-  it("stores mappings, snapshots, and deduplicated notifications", () => {
+  it("stores mappings, snapshots, and deduplicated notifications", async () => {
     const directory = mkdtempSync(join(tmpdir(), "linear-sync-state-"));
     const state = new SyncState(join(directory, "state.db"));
     const mapping = {
@@ -77,8 +77,11 @@ describe("sync state", () => {
       externalIssueId: "startup-1",
       externalIssueUrl: "https://linear.app/startup/issue/STARTUP-1",
     })).toThrow();
-    expect(state.shouldNotify("personal-1", "work", "conflict", "title")).toBe(true);
-    expect(state.shouldNotify("personal-1", "work", "conflict", "title")).toBe(false);
+    let notifications = 0;
+    const send = async () => { notifications += 1; };
+    await state.notify("personal-1", "work", "conflict", "title", send);
+    await state.notify("personal-1", "work", "conflict", "title", send);
+    expect(notifications).toBe(1);
     state.close();
   });
 

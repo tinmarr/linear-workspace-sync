@@ -447,6 +447,7 @@ describe("SDK notification client", () => {
     const humanClient = {
       createComment: async (input: unknown) => {
         humanComments.push(input);
+        return { success: true };
       },
       teams: async () => connection([{ id: "team-personal", name: "Personal" }]),
       issueLabels: async () => connection([{
@@ -462,6 +463,7 @@ describe("SDK notification client", () => {
     const appClient = {
       createComment: async (input: unknown) => {
         appComments.push(input);
+        return { success: true };
       },
     };
     const Workspace = SdkLinearWorkspace as unknown as new (...args: any[]) => SdkLinearWorkspace;

@@ -265,7 +265,7 @@ export class MilestoneSynchronizer {
 
     const conflicts = MILESTONE_FIELDS.filter((field) =>
       this.changedOnBothSides(field, previous, current)
-      && current.personal[field] !== current.external[field],
+      && !this.fieldEqual(field, current.personal, current.external),
     );
     if (conflicts.length > 0) {
       const fields = conflicts.map((field) => `milestone:${personalMilestone.name}:${field}`);
@@ -419,7 +419,9 @@ export class MilestoneSynchronizer {
   }
 
   private fieldEqual(field: MilestoneField, left: MilestoneSnapshot, right: MilestoneSnapshot): boolean {
-    return left[field] === right[field];
+    return field === "description"
+      ? (left.description ?? "") === (right.description ?? "")
+      : left[field] === right[field];
   }
 
   private emptyResult(): MilestoneSyncResult {

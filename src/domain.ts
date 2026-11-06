@@ -116,6 +116,8 @@ export type ProjectSnapshot = {
   description: string | null;
   statusName: string;
   statusType: string;
+  // Optional for persisted snapshots written before full descriptions were synchronized.
+  content?: string | null;
   priority: number;
   startDate: string | null;
   targetDate: string | null;
@@ -199,6 +201,7 @@ export type CoreField =
   | "priority";
 
 export type ProjectField =
+  | "content"
   | "name"
   | "description"
   | "statusName"
@@ -218,6 +221,7 @@ export const CORE_FIELDS: readonly CoreField[] = [
 ];
 
 export const PROJECT_FIELDS: readonly ProjectField[] = [
+  "content",
   "name",
   "description",
   "statusName",

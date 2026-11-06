@@ -358,6 +358,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     const payload = await this.client.createProject({
       teamIds: [team.id],
       name: input.name,
+      content: input.content ?? undefined,
       description: input.description ?? undefined,
       priority: input.priority,
       startDate: input.startDate ?? undefined,
@@ -382,6 +383,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     });
     const input: LinearDocument.ProjectUpdateInput = {};
     if (update.name !== undefined) input.name = update.name;
+    if (update.content !== undefined) input.content = update.content;
     if (update.description !== undefined) input.description = update.description;
     if (update.priority !== undefined) input.priority = update.priority;
     if (update.startDate !== undefined) input.startDate = update.startDate;
@@ -618,9 +620,22 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     if (!payload.success) throw new Error(`Linear failed to delete issue attachment ${resourceId}`);
   }
 
+  private async createNotification(input: Parameters<NotificationClient["createComment"]>[0]) {
+    try {
+      return await this.notificationClient.createComment(input);
+    } catch (error) {
+      const authenticationFailure = error instanceof Error
+        && /authentication required|not authenticated|invalid.*token|token.*expired/i.test(error.message);
+      if (this.notificationClient === this.client || !authenticationFailure) throw error;
+      logEvent("linear_notification_authentication_fallback", { workspace: this.config.name });
+      return this.client.createComment(input);
+    }
+  }
+
   public async addPersonalNotification(issueId: string, message: string): Promise<void> {
     logEvent("linear_personal_notification_adding", { workspace: this.config.name, issueId });
-    await this.notificationClient.createComment({ issueId, body: `${this.viewerUrl} ${message}` });
+    const payload = await this.createNotification({ issueId, body: `${this.viewerUrl} ${message}` });
+    if (!payload.success) throw new Error(`Linear failed to create notification for ${issueId}`);
     logEvent("linear_personal_notification_added", { workspace: this.config.name, issueId });
   }
 
@@ -674,10 +689,11 @@ export class SdkLinearWorkspace implements LinearWorkspace {
 
   public async addPersonalProjectNotification(projectId: string, message: string): Promise<void> {
     logEvent("linear_personal_project_notification_adding", { workspace: this.config.name, projectId });
-    await this.notificationClient.createComment({
+    const payload = await this.createNotification({
       projectId,
       body: `${this.viewerUrl} ${message}`,
     });
+    if (!payload.success) throw new Error(`Linear failed to create notification for ${projectId}`);
   }
 
   private async toLinearProject(
@@ -701,6 +717,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
       workspaceKey: this.key,
       name: project.name,
       description: project.description ?? null,
+      content: project.content ?? null,
       statusName: status?.name ?? "",
       statusType: status?.type ?? "",
       priority: project.priority,

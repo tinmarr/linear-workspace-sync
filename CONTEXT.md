@@ -65,7 +65,7 @@ A conflict in which more than one personal issue claims the same external issue,
 _Avoid_: duplicate mapping, link error
 
 **Conflict label**:
-A reserved label on the personal issue indicating that synchronization is paused for a conflict until the compared values converge.
+A reserved personal-workspace label indicating an unresolved synchronization conflict. Removing it from a previously conflicted issue selects that personal issue as the source of truth for its synchronized fields and resources.
 _Avoid_: error tag, warning label
 
 **Broken sync state**:
@@ -199,7 +199,7 @@ An otherwise eligible inbound issue whose external project is not yet represente
 _Avoid_: project-wide import, automatic project discovery
 
 **Project field**:
-A project attribute synchronized between mapped projects for the MVP: name, description, status, priority, start date, or target date.
+A project attribute synchronized between mapped projects for the MVP: name, short summary, full description, status, priority, start date, or target date.
 _Avoid_: project metadata, project mirror field
 
 **Project issue membership**:
