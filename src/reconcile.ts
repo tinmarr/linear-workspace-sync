@@ -1,3 +1,4 @@
+import { formatConflictDiff } from "./conflict-diff.js";
 import type {
   AppConfig,
   CoreField,
@@ -616,7 +617,7 @@ export class ReconciliationEngine {
       ? [...conflicts, "resources"]
       : conflicts;
     if (allConflicts.length > 0 && !personalWins) {
-      await this.markConflict(personalIssue, pair.externalConfig.key, allConflicts);
+      await this.markConflict(personalIssue, pair.externalConfig.key, allConflicts, externalIssue);
       processedMappingKeys.add(issueMappingKey(pair.externalConfig.key, externalIssue.id));
       return { conflicts: 1, broken: 0 };
     }
@@ -887,14 +888,17 @@ export class ReconciliationEngine {
     personalIssue: LinearIssue,
     externalWorkspaceKey: WorkspaceKey,
     fields: string[],
+    externalIssue?: LinearIssue,
   ): Promise<void> {
     await this.addPersonalLabelIfMissing(personalIssue, this.config.syncLabels.conflict);
     this.state.setConflict(personalIssue.id, externalWorkspaceKey);
     const fingerprint = fields.slice().sort().join(",");
     await this.state.notify(personalIssue.id, externalWorkspaceKey, "conflict", fingerprint, async () => {
+      const externalName = this.config.external.find((workspace) => workspace.key === externalWorkspaceKey)?.workspaceName ?? externalWorkspaceKey;
+      const diff = externalIssue ? formatConflictDiff(fields, this.toSnapshot(personalIssue), this.toSnapshot(externalIssue), this.config.personal.workspaceName, externalName) : "";
       await this.personal.addPersonalNotification(
         personalIssue.id,
-        `A sync conflict needs your attention for: ${fields.join(", ")}. Edit this personal issue to keep the desired values, then remove ${this.config.syncLabels.conflict} to overwrite the external issue.`,
+        `A sync conflict needs your attention for: ${fields.join(", ")}.${diff ? `\n\n${diff}\n\n` : " "}Edit this personal issue to keep the desired values, then remove ${this.config.syncLabels.conflict} to overwrite the external issue.`,
       );
     });
   }

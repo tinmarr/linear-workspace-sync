@@ -1,8 +1,9 @@
 poll_interval_seconds = 300
 database_path = "state/state.db"
-# Optional app-actor access token used only for personal sync notifications.
-# If omitted, notification comments use the personal workspace API key.
-notification_access_token_env = "LINEAR_NOTIFICATION_ACCESS_TOKEN"
+# Optional headless app notification credentials (set both values in the environment).
+# Without client credentials, comments use the personal workspace API key.
+notification_client_id_env = "LINEAR_NOTIFICATION_CLIENT_ID"
+notification_client_secret_env = "LINEAR_NOTIFICATION_CLIENT_SECRET"
 
 [personal]
 name = "personal"

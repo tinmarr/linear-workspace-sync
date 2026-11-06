@@ -1,6 +1,5 @@
 import { LinearClient, LinearDocument } from "@linear/sdk";
 import {
-  DEFAULT_NOTIFICATION_ACCESS_TOKEN_ENV,
   type AppConfig,
   type IssueRelationChange,
   type IssueRelationSnapshot,
@@ -28,6 +27,7 @@ import type {
   MilestoneCreateInput,
   MilestoneUpdate,
 } from "./linear.js";
+import { createClientCredentialsNotificationClient, isAuthenticationFailure } from "./notification-auth.js";
 import { logEvent } from "./log.js";
 import { projectMilestoneCacheKey } from "./keys.js";
 
@@ -665,8 +665,7 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     try {
       return await this.notificationClient.createComment(input);
     } catch (error) {
-      const authenticationFailure = error instanceof Error
-        && /authentication required|not authenticated|invalid.*token|token.*expired/i.test(error.message);
+      const authenticationFailure = isAuthenticationFailure(error);
       if (this.notificationClient === this.client || !authenticationFailure) throw error;
       logEvent("linear_notification_authentication_fallback", { workspace: this.config.name });
       return this.client.createComment(input);
@@ -1200,17 +1199,19 @@ export async function createSdkWorkspaces(config: AppConfig): Promise<{
   personal: SdkLinearWorkspace;
   externals: Map<string, SdkLinearWorkspace>;
 }> {
-  const notificationAccessTokenEnv =
-    config.notificationAccessTokenEnv ?? DEFAULT_NOTIFICATION_ACCESS_TOKEN_ENV;
-  const notificationAccessToken = process.env[notificationAccessTokenEnv];
-  const notificationClient = notificationAccessToken
-    ? new LinearClient({ accessToken: notificationAccessToken })
+  const clientIdEnv = config.notificationClientIdEnv ?? "LINEAR_NOTIFICATION_CLIENT_ID";
+  const clientSecretEnv = config.notificationClientSecretEnv ?? "LINEAR_NOTIFICATION_CLIENT_SECRET";
+  const clientId = process.env[clientIdEnv]?.trim();
+  const clientSecret = process.env[clientSecretEnv]?.trim();
+  if (Boolean(clientId) !== Boolean(clientSecret)) {
+    throw new Error(`Set both ${clientIdEnv} and ${clientSecretEnv} for Linear notification client credentials`);
+  }
+  const notificationClient = clientId && clientSecret
+    ? await createClientCredentialsNotificationClient(clientId, clientSecret)
     : undefined;
   logEvent(
-    notificationClient
-      ? "linear_notification_client_ready"
-      : "linear_notification_client_fallback",
-    { environmentVariable: notificationAccessTokenEnv },
+    notificationClient ? "linear_notification_client_ready" : "linear_notification_client_fallback",
+    { authentication: clientId ? "client_credentials" : "personal" },
   );
   const personal = await SdkLinearWorkspace.create(
     config.personal,
