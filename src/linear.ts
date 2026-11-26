@@ -162,7 +162,6 @@ export interface LinearWorkspace {
   deleteProjectRelation(relationId: string): Promise<void>;
   createIssueRelation(input: IssueRelationCreateInput): Promise<IssueRelationSnapshot>;
   deleteIssueRelation(relationId: string): Promise<void>;
-  restoreIssue(issueId: string): Promise<LinearIssue>;
   ensureLabel(text: string): Promise<void>;
   addLabel(issueId: string, text: string): Promise<void>;
   removeLabel(issueId: string, text: string): Promise<void>;

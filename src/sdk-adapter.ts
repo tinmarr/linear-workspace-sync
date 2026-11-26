@@ -614,16 +614,6 @@ export class SdkLinearWorkspace implements LinearWorkspace {
     });
   }
 
-  public async restoreIssue(issueId: string): Promise<LinearIssue> {
-    const payload = await (await this.client.issue(issueId)).unarchive();
-    const issue = await payload.entity;
-    if (!issue) throw new Error(`Linear returned no issue after unarchive(${issueId})`);
-    this.cacheSdkIssue(issue);
-    const result = await this.toLinearIssue(issue, { includeResources: true });
-    this.cacheIssue(result);
-    return result;
-  }
-
   public async ensureLabel(text: string): Promise<void> {
     logEvent("linear_label_ensuring", { workspace: this.config.name, label: text });
     try {

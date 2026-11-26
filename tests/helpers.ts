@@ -278,13 +278,6 @@ export class FakeWorkspace implements LinearWorkspace {
     throw new Error(`Unknown issue relation ${relationId}`);
   }
 
-  public async restoreIssue(issueId: string): Promise<LinearIssue> {
-    const issue = this.issues.get(issueId);
-    if (!issue) throw new Error(`Unknown issue ${issueId}`);
-    issue.archived = false;
-    return structuredClone(issue);
-  }
-
   public async ensureLabel(text: string): Promise<void> {
     this.labels.add(text);
   }

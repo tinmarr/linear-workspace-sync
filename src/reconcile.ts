@@ -215,8 +215,9 @@ export class ReconciliationEngine {
       const personalIssue = context.personalIssues.get(mapping.personalIssueId)
         ?? await this.personal.getIssue(mapping.personalIssueId, true);
       if (personalIssue) context.personalIssues.set(personalIssue.id, personalIssue);
+      if (personalIssue?.archived) continue;
       const externalIssue = await this.getExternalIssue(pair, mapping.externalIssueId, context);
-      if (!personalIssue || personalIssue.archived) {
+      if (!personalIssue) {
         if (externalIssue && !externalIssue.archived) {
           if (externalIssue.projectId) {
             const projectResult = await projectSynchronizer.ensureInboundProject(
@@ -226,9 +227,7 @@ export class ReconciliationEngine {
             );
             this.addProjectResult(result, projectResult.result);
           }
-          const replacementResult = personalIssue
-            ? { issue: await this.personal.restoreIssue(personalIssue.id), statusMapped: true }
-            : await this.createInboundPersonalIssue(pair, externalIssue, context.projectContext);
+          const replacementResult = await this.createInboundPersonalIssue(pair, externalIssue, context.projectContext);
           const replacement = replacementResult.issue;
           context.personalIssues.set(replacement.id, replacement);
           await this.ensurePersonalLinkAndLabel(replacement, pair, externalIssue);
@@ -492,6 +491,14 @@ export class ReconciliationEngine {
     projectSynchronizer: ProjectSynchronizer,
   ): Promise<ReconciliationResult> {
     const result = this.emptyResult();
+    const existing = this.state.findMappingByExternal(pair.externalConfig.key, externalIssue.id);
+    const personalIssue = existing
+      ? context.personalIssues.get(existing.personalIssueId) ?? await this.personal.getIssue(existing.personalIssueId, true)
+      : null;
+    if (personalIssue?.archived) {
+      context.personalIssues.set(personalIssue.id, personalIssue);
+      return result;
+    }
     if (externalIssue.projectId) {
       const projectResult = await projectSynchronizer.ensureInboundProject(
         pair,
@@ -500,10 +507,7 @@ export class ReconciliationEngine {
       );
       this.addProjectResult(result, projectResult.result);
     }
-    const existing = this.state.findMappingByExternal(pair.externalConfig.key, externalIssue.id);
     if (existing) {
-      const personalIssue = context.personalIssues.get(existing.personalIssueId)
-        ?? await this.personal.getIssue(existing.personalIssueId, true);
       if (!personalIssue) {
         const replacement = await this.createInboundPersonalIssue(pair, externalIssue, context.projectContext);
         context.personalIssues.set(replacement.issue.id, replacement.issue);
